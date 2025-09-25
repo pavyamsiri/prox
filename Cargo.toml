@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "crates/prox_lexer",
+]
+resolver = "3"

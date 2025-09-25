@@ -4,12 +4,12 @@ mod initial;
 mod numeric;
 mod slash;
 mod string;
+mod whitespace;
 
-use crate::source::SourceChar;
-use crate::span::Span;
 use crate::state::double::DoubleCharacterState;
 use crate::state::string::StringState;
-use crate::token::{Token, TokenKind};
+use crate::token::Token;
+use crate::{source::SourceChar, state::whitespace::WhitespaceState};
 use ident::IdentState;
 use initial::InitialState;
 use numeric::{DecimalState, IntegerState, PeriodState};
@@ -67,6 +67,8 @@ pub enum State {
     Slash(SlashState),
     /// The state after seeing a double slash.
     Comment(CommentState),
+    /// The state when consuming whitespace.
+    Whitespace(WhitespaceState),
     /// The state when lexing is finished.
     Finished,
 }
@@ -100,6 +102,7 @@ impl State {
             Self::DoubleCharacter(ref state) => state.execute(text, next_char),
             Self::Slash(ref state) => state.execute(text, next_char),
             Self::Comment(ref state) => state.execute(text, next_char),
+            Self::Whitespace(ref state) => state.execute(text, next_char),
         }
     }
 }

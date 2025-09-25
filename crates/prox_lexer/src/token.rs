@@ -9,6 +9,36 @@ pub struct Token {
     pub span: Span,
 }
 
+impl Token {
+    /// Create an EOF token.
+    pub const fn eof(offset: usize) -> Self {
+        Self {
+            tag: TokenKind::Eof,
+            span: Span {
+                start: offset,
+                length: 0,
+            },
+        }
+    }
+
+    /// Check if the token is EOF.
+    pub const fn is_eof(&self) -> bool {
+        matches!(self.tag, TokenKind::Eof)
+    }
+
+    /// Check if the token is whitespace.
+    pub const fn is_whitespace(&self) -> bool {
+        matches!(self.tag, TokenKind::Whitespace)
+    }
+
+    /// Check if the token is an error.
+    pub const fn is_error(&self) -> bool {
+        matches!(
+            self.tag,
+            TokenKind::ErrorUnterminatedString | TokenKind::ErrorUnknownChar
+        )
+    }
+}
 #[derive(Debug, Clone, Copy)]
 pub enum TokenKind {
     // Parentheses
@@ -102,33 +132,66 @@ pub enum TokenKind {
     /// End of file.
     Eof,
 
+    // Trivia tokens.
+    Whitespace,
+    Comment,
+
     // Error tokens.
+    /// The error when a string is not properly terminated.
+    /// Can really only happen once when the string ends in EOF as multiline strings
+    /// are allowed.
     ErrorUnterminatedString,
+    /// The error when the text contains an unknown character.
     ErrorUnknownChar,
 }
 
-impl Token {
-    /// Create an EOF token.
-    pub const fn eof(offset: usize) -> Self {
-        Self {
-            tag: TokenKind::Eof,
-            span: Span {
-                start: offset,
-                length: 0,
-            },
+impl TokenKind {
+    /// Return the token's CC format representation.
+    pub const fn format_cc(self) -> &'static str {
+        match self {
+            Self::LeftParenthesis => "LEFT_PAREN",
+            Self::RightParenthesis => "RIGHT_PAREN",
+            Self::LeftBrace => "LEFT_BRACE",
+            Self::RightBrace => "RIGHT_BRACE",
+            Self::Comma => "COMMA",
+            Self::Dot => "DOT",
+            Self::Minus => "MINUS",
+            Self::Plus => "PLUS",
+            Self::Semicolon => "SEMICOLON",
+            Self::Star => "STAR",
+            Self::Bang => "BANG",
+            Self::Equal => "EQUAL",
+            Self::LessThan => "LESS_THAN",
+            Self::GreaterThan => "GREATER_THAN",
+            Self::Slash => "SLASH",
+            Self::BangEqual => "BANG_EQUAL",
+            Self::EqualEqual => "EQUAL_EQUAL",
+            Self::LessThanEqual => "LESS_EQUAL",
+            Self::GreaterThanEqual => "GREATER_EQUAL",
+            Self::NumericLiteral => "NUMBER",
+            Self::StringLiteral => "STRING",
+            Self::Ident => "IDENTIFIER",
+            Self::KeywordAnd => "AND",
+            Self::KeywordClass => "CLASS",
+            Self::KeywordElse => "ELSE",
+            Self::KeywordFalse => "FALSE",
+            Self::KeywordFor => "FOR",
+            Self::KeywordFun => "FUN",
+            Self::KeywordIf => "IF",
+            Self::KeywordNil => "NIL",
+            Self::KeywordOr => "OR",
+            Self::KeywordPrint => "PRINT",
+            Self::KeywordReturn => "RETURN",
+            Self::KeywordSuper => "SUPER",
+            Self::KeywordThis => "THIS",
+            Self::KeywordTrue => "TRUE",
+            Self::KeywordVar => "VAR",
+            Self::KeywordWhile => "WHILE",
+            Self::Eof => "EOF",
+            Self::ErrorUnterminatedString => "ERROR_UNTERMINATED_STRING",
+            Self::ErrorUnknownChar => "ERROR_UNKNOWN_CHAR",
+            Self::Whitespace => "TRIVIA_WHITESPACE",
+            Self::Comment => "TRIVIA_COMMENT",
         }
-    }
-
-    /// Check if the token is EOF.
-    pub const fn is_eof(&self) -> bool {
-        matches!(self.tag, TokenKind::Eof)
-    }
-
-    /// Check if the token is an error.
-    pub const fn is_error(&self) -> bool {
-        matches!(
-            self.tag,
-            TokenKind::ErrorUnterminatedString | TokenKind::ErrorUnknownChar
-        )
     }
 }

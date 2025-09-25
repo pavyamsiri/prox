@@ -34,7 +34,7 @@ impl SlashState {
 
         if ch == '/' {
             LexerTransition {
-                new_state: Some(State::Comment(CommentState)),
+                new_state: Some(State::Comment(CommentState { start: self.start })),
                 token: None,
                 put_back: LexerPutBack::None,
             }
@@ -66,11 +66,13 @@ impl SlashState {
 
 /// The state after seeing a double slash.
 #[derive(Debug)]
-pub struct CommentState;
+pub struct CommentState {
+    /// The byte offset of the first `/`.
+    pub start: usize,
+}
 
 impl CommentState {
     /// Execute a cycle of the lexer state machine.
-    #[expect(clippy::unused_self, reason = "This signature mirrors other states.")]
     pub const fn execute(
         &self,
         text: &str,
@@ -87,12 +89,19 @@ impl CommentState {
         };
 
         let ch = next_char.value;
+        let offset = next_char.offset;
 
         if ch == '\n' {
             LexerTransition {
-                new_state: Some(State::initial(next_char.next_offset())),
-                token: None,
-                put_back: LexerPutBack::None,
+                new_state: Some(State::initial(offset)),
+                token: Some(Token {
+                    tag: TokenKind::Comment,
+                    span: Span {
+                        start: self.start,
+                        length: offset - self.start,
+                    },
+                }),
+                put_back: LexerPutBack::One([next_char]),
             }
         } else {
             LexerTransition {

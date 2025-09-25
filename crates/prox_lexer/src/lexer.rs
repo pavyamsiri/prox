@@ -1,6 +1,7 @@
 use crate::source::SourceLookup;
 use crate::state::{LexerTransition, State};
 use crate::token::{Token, TokenKind};
+use core::fmt;
 
 pub struct Lexer<'src> {
     /// The source text.
@@ -13,6 +14,7 @@ pub struct Lexer<'src> {
 
 impl<'src> Lexer<'src> {
     /// Create a lexer.
+    #[must_use]
     pub fn new(source: &'src str) -> Self {
         Self {
             source: SourceLookup::new(source),
@@ -57,10 +59,71 @@ impl<'src> Lexer<'src> {
     }
 
     /// Return the lexeme of a token.
+    #[must_use]
     pub fn lexeme(&self, token: &Token) -> Option<&'src str> {
         match token.tag {
             TokenKind::Eof => Some("'eof'"),
             _ => self.source.get_lexeme(&token.span),
         }
+    }
+
+    /// Dump a token in CC format.
+    ///
+    /// # Errors
+    /// This function will only error if writes into the buffer error.
+    ///
+    /// # Panics
+    /// This function will panic if the given token does represent a valid span in the lexer.
+    pub fn dump_token_cc(
+        &self,
+        buffer: &mut impl fmt::Write,
+        token: &Token,
+    ) -> Result<(), fmt::Error> {
+        let lexeme = if token.is_eof() {
+            String::new()
+        } else if token.is_whitespace() {
+            let lexeme = self.lexeme(token).expect("no support for invalid tokens.");
+            lexeme
+                .replace('\n', "\\n")
+                .replace('\t', "\\t")
+                .replace(' ', "_")
+        } else {
+            self.lexeme(token)
+                .expect("no support for invalid tokens.")
+                .to_owned()
+        };
+        let line = self.source.get_line(&token.span).start;
+
+        match token.tag {
+            TokenKind::ErrorUnterminatedString => {
+                write!(buffer, "[line {line}] Error: Unterminated string.")?;
+            }
+            TokenKind::ErrorUnknownChar => {
+                write!(
+                    buffer,
+                    "[line {line}] Error: Unexpected character: {lexeme}"
+                )?;
+            }
+            _ => {
+                let tag = token.tag.format_cc();
+                write!(buffer, "{tag} {lexeme} ")?;
+                match token.tag {
+                    TokenKind::NumericLiteral => write!(
+                        buffer,
+                        "{:?}",
+                        lexeme
+                            .parse::<f64>()
+                            .expect("numeric tokens should always be parseable.")
+                    )?,
+                    TokenKind::StringLiteral => {
+                        let value = &lexeme[1..lexeme.len() - 1];
+                        write!(buffer, "{value}")?;
+                    }
+                    _ => write!(buffer, "null")?,
+                }
+            }
+        }
+
+        Ok(())
     }
 }

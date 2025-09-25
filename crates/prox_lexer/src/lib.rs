@@ -4,6 +4,8 @@ mod span;
 mod state;
 mod token;
 
+pub use lexer::Lexer;
+
 #[cfg(test)]
 mod test {
     use crate::lexer::Lexer;

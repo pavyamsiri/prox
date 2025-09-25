@@ -5,6 +5,7 @@ use crate::state::ident::IdentState;
 use crate::state::numeric::IntegerState;
 use crate::state::slash::SlashState;
 use crate::state::string::StringState;
+use crate::state::whitespace::WhitespaceState;
 use crate::state::{LexerPutBack, LexerTransition, State};
 use crate::token::{Token, TokenKind};
 
@@ -58,7 +59,7 @@ impl InitialState {
         };
         match ch {
             '\t' | '\x0C' | '\r' | ' ' | '\n' => LexerTransition {
-                new_state: Some(State::initial(next_char.next_offset())),
+                new_state: Some(State::Whitespace(WhitespaceState { start: self.start })),
                 token: None,
                 put_back: LexerPutBack::None,
             },

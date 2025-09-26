@@ -81,9 +81,9 @@ pub enum Node {
 }
 
 impl Tree {
-    pub fn dump<'src>(
+    pub fn dump(
         &self,
-        lookup: &SourceLookup<'src>,
+        lookup: &SourceLookup<'_>,
         buffer: &mut impl fmt::Write,
         level: usize,
         skip_trivia: bool,
@@ -94,7 +94,7 @@ impl Tree {
         for child in &self.children {
             match *child {
                 Node::Token(token) => {
-                    if token.is_whitespace() {
+                    if skip_trivia && token.is_whitespace() {
                         continue;
                     }
                     let lexeme =
@@ -105,5 +105,39 @@ impl Tree {
             }
         }
         Ok(())
+    }
+}
+
+impl TreeKind {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ExprAtom => "an expression literal",
+            Self::ExprGroup => "an expression group",
+            Self::ExprPrefix => "a unary expression",
+            Self::ExprInfix => "a binary expression",
+            Self::ExprInfixAssignment => "an assignment expression",
+            Self::ExprInfixShortCircuit => "a short circuiting binary expression",
+            Self::ExprCall => "an expression call",
+            Self::ExprGet => "a field access",
+            Self::ExprSet => "a field set",
+            Self::Program => "the program",
+            Self::StmtFnDecl => "a function declaration",
+            Self::StmtVarDecl => "a variable declaration",
+            Self::StmtClassDecl => "a class declaration",
+            Self::StmtMethodDecl => "a method declaration",
+            Self::StmtBlock => "a block statement",
+            Self::StmtReturn => "a return statement",
+            Self::StmtExpr => "an expression statement",
+            Self::StmtPrint => "a print statement",
+            Self::StmtIf => "an if statement",
+            Self::StmtWhile => "a while statement",
+            Self::StmtFor => "a for statement",
+            Self::ParamList => "a parameter list",
+            Self::Param => "a parameter",
+            Self::VarDeclInitializer => "a variable declaration initializer",
+            Self::ArgList => "an argument list",
+            Self::Arg => "an argument",
+            Self::Error => "an error",
+        }
     }
 }

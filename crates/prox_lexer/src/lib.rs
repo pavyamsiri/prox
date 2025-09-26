@@ -1,6 +1,6 @@
 mod lexer;
 mod source;
-mod span;
+pub mod span;
 mod state;
 pub mod token;
 

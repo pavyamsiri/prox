@@ -81,11 +81,13 @@ impl<'src> SourceLookup<'src> {
     }
 
     /// Return the source.
+    #[must_use]
     pub const fn get_text(&self) -> &'src str {
         self.text
     }
 
     /// Return the lexeme associated with the given span if the span is valid.
+    #[must_use]
     pub fn get_lexeme(&self, span: &Span) -> Option<&'src str> {
         let range = span.range();
         if range.end > self.text.len() {
@@ -97,6 +99,7 @@ impl<'src> SourceLookup<'src> {
     /// Return the line numbers of a span.
     ///
     /// If the span is invalid, the maximum line number is returned.
+    #[must_use]
     pub fn get_line(&self, span: &Span) -> ops::Range<usize> {
         let max_line = self.line_breaks.len() + 1;
         let range = span.range();

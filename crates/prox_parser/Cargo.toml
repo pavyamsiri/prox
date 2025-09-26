@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 prox_lexer = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true

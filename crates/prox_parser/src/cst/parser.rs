@@ -1,21 +1,192 @@
-use crate::cst::{
-    operator::{
-        assignment_infix_binding_power, infix_binding_power, postfix_binding_power,
-        prefix_binding_power, short_circuit_infix_binding_power,
-    },
-    tree::{Node, Tree, TreeKind},
+use crate::cst::operator::{
+    assignment_infix_binding_power, infix_binding_power, postfix_binding_power,
+    prefix_binding_power, short_circuit_infix_binding_power,
 };
+use crate::cst::tree::{Node, Tree, TreeKind};
 use core::cell;
+use core::fmt;
 use prox_lexer::{
     Lexer, SourceLookup,
+    span::Span,
     token::{Token, TokenKind},
 };
+
+/// The only valid first tokens of an expression.
+const EXPR_FIRST: &[TokenKind] = &[
+    // Atoms
+    TokenKind::NumericLiteral,
+    TokenKind::KeywordTrue,
+    TokenKind::KeywordFalse,
+    TokenKind::KeywordNil,
+    TokenKind::Ident,
+    TokenKind::StringLiteral,
+    TokenKind::KeywordThis,
+    TokenKind::KeywordSuper,
+    // Groupings
+    TokenKind::LeftParenthesis,
+    // Unary operators
+    TokenKind::Bang,
+    TokenKind::Minus,
+];
+
+/// The only valid first tokens of a statement.
+const STMT_FIRST: &[TokenKind] = &[
+    // For
+    TokenKind::KeywordFor,
+    // If
+    TokenKind::KeywordIf,
+    // Print
+    TokenKind::KeywordPrint,
+    // Return
+    TokenKind::KeywordReturn,
+    // While
+    TokenKind::KeywordWhile,
+    // Block
+    TokenKind::LeftBrace,
+    // Atoms
+    TokenKind::NumericLiteral,
+    TokenKind::KeywordTrue,
+    TokenKind::KeywordFalse,
+    TokenKind::KeywordNil,
+    TokenKind::Ident,
+    TokenKind::StringLiteral,
+    TokenKind::KeywordThis,
+    TokenKind::KeywordSuper,
+    // Groupings
+    TokenKind::LeftParenthesis,
+    // Unary operators
+    TokenKind::Bang,
+    TokenKind::Minus,
+];
+
+/// The only valid first tokens of a declaration.
+const DECL_FIRST: &[TokenKind] = &[
+    // Var
+    TokenKind::KeywordVar,
+    // Class
+    TokenKind::KeywordClass,
+    // Fun
+    TokenKind::KeywordFun,
+    // For
+    TokenKind::KeywordFor,
+    // If
+    TokenKind::KeywordIf,
+    // Print
+    TokenKind::KeywordPrint,
+    // Return
+    TokenKind::KeywordReturn,
+    // While
+    TokenKind::KeywordWhile,
+    // Block
+    TokenKind::LeftBrace,
+    // Atoms
+    TokenKind::NumericLiteral,
+    TokenKind::KeywordTrue,
+    TokenKind::KeywordFalse,
+    TokenKind::KeywordNil,
+    TokenKind::Ident,
+    TokenKind::StringLiteral,
+    TokenKind::KeywordThis,
+    TokenKind::KeywordSuper,
+    // Groupings
+    TokenKind::LeftParenthesis,
+    // Unary operators
+    TokenKind::Bang,
+    TokenKind::Minus,
+];
+
+/// All valid first tokens of an expression as a pattern.
+macro_rules! expr_first {
+    () => {
+        // Atoms
+        prox_lexer::token::TokenKind::NumericLiteral
+            | prox_lexer::token::TokenKind::KeywordTrue
+            | prox_lexer::token::TokenKind::KeywordFalse
+            | prox_lexer::token::TokenKind::KeywordNil
+            | prox_lexer::token::TokenKind::Ident
+            | prox_lexer::token::TokenKind::StringLiteral
+            | prox_lexer::token::TokenKind::KeywordThis
+            | prox_lexer::token::TokenKind::KeywordSuper
+            // Groupings
+            | prox_lexer::token::TokenKind::LeftParenthesis
+            // Unary operators
+            | prox_lexer::token::TokenKind::Bang
+            | prox_lexer::token::TokenKind::Minus
+    };
+}
+
+/// All valid first tokens of a statement as a pattern.
+macro_rules! stmt_first {
+    () => {
+        prox_lexer::token::TokenKind::KeywordFor
+            | prox_lexer::token::TokenKind::KeywordIf
+            | prox_lexer::token::TokenKind::KeywordPrint
+            | prox_lexer::token::TokenKind::KeywordReturn
+            | prox_lexer::token::TokenKind::KeywordWhile
+            | prox_lexer::token::TokenKind::LeftBrace
+            | prox_lexer::token::TokenKind::NumericLiteral
+            | prox_lexer::token::TokenKind::KeywordTrue
+            | prox_lexer::token::TokenKind::KeywordFalse
+            | prox_lexer::token::TokenKind::KeywordNil
+            | prox_lexer::token::TokenKind::Ident
+            | prox_lexer::token::TokenKind::StringLiteral
+            | prox_lexer::token::TokenKind::KeywordThis
+            | prox_lexer::token::TokenKind::KeywordSuper
+            | prox_lexer::token::TokenKind::LeftParenthesis
+            | prox_lexer::token::TokenKind::Bang
+            | prox_lexer::token::TokenKind::Minus
+    };
+}
+
+/// The recovery set for statements.
+const STMT_RECOVERY: &[TokenKind] = &[
+    // Declarations
+    TokenKind::KeywordClass,
+    TokenKind::KeywordVar,
+    TokenKind::KeywordFun,
+];
+
+#[derive(Debug)]
+pub enum ParseError {
+    Expected {
+        actual: Token,
+        expected: String,
+        context: String,
+    },
+    Custom(String),
+}
+
+impl fmt::Display for ParseError {
+    #[expect(
+        clippy::min_ident_chars,
+        reason = "keep consistent with trait definition."
+    )]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Expected {
+                actual,
+                ref expected,
+                ref context,
+            } => {
+                write!(
+                    f,
+                    "expected {expected}, found {:?} while parsing {context}",
+                    actual.tag
+                )
+            }
+            Self::Custom(ref msg) => {
+                write!(f, "{msg}")
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 enum Event {
     Open { kind: TreeKind },
     Close,
     Advance,
+    UnexpectedToken { expected: String, context: String },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -28,15 +199,17 @@ struct MarkClosed {
     index: usize,
 }
 
-struct Parser<'src> {
+pub struct Parser<'src> {
     source: SourceLookup<'src>,
     tokens: Vec<Token>,
     current_index: usize,
     fuel: cell::Cell<u32>,
     events: Vec<Event>,
+    context_stack: Vec<TreeKind>,
 }
 
 impl<'src> Parser<'src> {
+    #[must_use]
     pub fn new(text: &'src str) -> Self {
         let lexer = Lexer::new(text);
         let source = lexer.get_source().clone();
@@ -47,18 +220,20 @@ impl<'src> Parser<'src> {
             fuel: cell::Cell::new(256),
             events: Vec::new(),
             source,
+            context_stack: Vec::new(),
         }
     }
 }
 
 impl Parser<'_> {
-    fn open(&mut self) -> MarkOpened {
+    fn open(&mut self, target: TreeKind) -> MarkOpened {
         let mark = MarkOpened {
             index: self.events.len(),
         };
         self.events.push(Event::Open {
             kind: TreeKind::Error,
         });
+        self.context_stack.push(target);
         mark
     }
 
@@ -80,6 +255,7 @@ impl Parser<'_> {
     fn close(&mut self, mark: MarkOpened, kind: TreeKind) -> MarkClosed {
         self.events[mark.index] = Event::Open { kind };
         self.events.push(Event::Close);
+        self.context_stack.pop();
         MarkClosed { index: mark.index }
     }
 
@@ -92,20 +268,42 @@ impl Parser<'_> {
     }
 
     fn consume_trivia(&mut self) {
-        while self.peek(0).is_trivia() {
+        while self.peek_kind(0).is_trivia() {
             self.advance();
         }
     }
 
-    fn advance_with_error(&mut self, error: &str) {
-        let mark = self.open();
+    fn report_error(&mut self, expected: &'static str) {
+        self.events.push(Event::UnexpectedToken {
+            expected: expected.to_owned(),
+            context: format!(
+                "{:?}",
+                self.context_stack
+                    .last()
+                    .expect("should always have a context on stack.")
+            ),
+        });
+    }
+
+    fn advance_with_error(&mut self, expected: &'static str) {
+        let outer_context = self
+            .context_stack
+            .last()
+            .copied()
+            .expect("should always have a context on stack.")
+            .name();
+        let mark = self.open(TreeKind::Error);
+
         // Add error reporting here
-        eprintln!("Error: {error}");
+        self.events.push(Event::UnexpectedToken {
+            expected: expected.to_owned(),
+            context: outer_context.to_owned(),
+        });
         self.advance();
         self.close(mark, TreeKind::Error);
     }
 
-    fn peek(&self, lookahead: usize) -> TokenKind {
+    fn peek_token(&self, lookahead: usize) -> Token {
         assert!(
             self.fuel.get() != 0,
             "this only happens if parser is stuck."
@@ -113,11 +311,26 @@ impl Parser<'_> {
         self.fuel.set(self.fuel.get() - 1);
         self.tokens
             .get(self.current_index + lookahead)
-            .map_or(TokenKind::Eof, |tok| tok.tag)
+            .copied()
+            .unwrap_or_else(|| Token {
+                tag: TokenKind::Eof,
+                span: Span {
+                    start: self.source.get_text().len(),
+                    length: 0,
+                },
+            })
+    }
+
+    fn peek_kind(&self, lookahead: usize) -> TokenKind {
+        self.peek_token(lookahead).tag
     }
 
     fn at(&self, kind: TokenKind) -> bool {
-        self.peek(0) == kind
+        self.peek_kind(0) == kind
+    }
+
+    fn at_any(&self, kinds: &[TokenKind]) -> bool {
+        kinds.contains(&self.peek_kind(0))
     }
 
     fn eat(&mut self, kind: TokenKind) -> bool {
@@ -130,14 +343,19 @@ impl Parser<'_> {
     }
 
     fn expect(&mut self, kind: TokenKind) {
-        println!("Expecting {kind:?}...");
         if self.eat(kind) {
             return;
         }
 
-        // Error reporting here.
-        let token = self.peek(0);
-        println!("FAIL: Got {token:?} instead...");
+        self.events.push(Event::UnexpectedToken {
+            expected: kind.name().to_owned(),
+            context: self
+                .context_stack
+                .last()
+                .expect("should always have a context on stack")
+                .name()
+                .to_owned(),
+        });
     }
 
     fn is_eof(&self) -> bool {
@@ -145,12 +363,13 @@ impl Parser<'_> {
     }
 }
 
-impl Parser<'_> {
+impl<'src> Parser<'src> {
     /// Construct the CST.
-    fn build_tree(self) -> Tree {
-        let mut tokens = self.tokens.into_iter();
+    fn build_tree(self) -> (SourceLookup<'src>, Tree, Vec<ParseError>) {
+        let mut tokens = self.tokens.into_iter().peekable();
         let mut events = self.events;
         let mut stack = Vec::new();
+        let mut errors = Vec::new();
 
         // Popping last event to ensure that we have a non-empty stack after loop.
         assert!(
@@ -160,13 +379,12 @@ impl Parser<'_> {
 
         for event in events {
             match event {
-                // Start a new tree.
-                Event::Open { kind } => stack.push(Tree {
-                    tag: kind,
-                    children: Vec::new(),
-                }),
-                // Complete a tree and pop it off the stack.
-                // Append it to the tree that is now on top of the stack.
+                Event::Open { kind } => {
+                    stack.push(Tree {
+                        tag: kind,
+                        children: Vec::new(),
+                    });
+                }
                 Event::Close => {
                     let tree = stack.pop().expect("close event follows an open event.");
                     stack
@@ -178,12 +396,22 @@ impl Parser<'_> {
                 Event::Advance => {
                     let token = tokens
                         .next()
-                        .expect("there should be as many tokens as there advance events.");
+                        .expect("there should be as many tokens as there are advance events.");
                     stack
                         .last_mut()
                         .expect("there is always at least one open event before an advance event.")
                         .children
                         .push(Node::Token(token));
+                }
+                Event::UnexpectedToken { context, expected } => {
+                    errors.push(ParseError::Expected {
+                        actual: tokens
+                            .peek()
+                            .copied()
+                            .expect("shouldn't have run out of tokens yet."),
+                        context,
+                        expected,
+                    });
                 }
             }
         }
@@ -204,43 +432,53 @@ impl Parser<'_> {
             "there should always be a single tree by the end."
         );
 
-        stack
-            .pop()
-            .expect("we just asserted that there was one left in the stack.")
+        (
+            self.source,
+            stack
+                .pop()
+                .expect("we just asserted that there was one left in the stack."),
+            errors,
+        )
+    }
+}
+
+impl<'src> Parser<'src> {
+    pub fn parse(mut self) -> (SourceLookup<'src>, Tree, Vec<ParseError>) {
+        self.program();
+        self.build_tree()
     }
 }
 
 // Parsing rules
 impl Parser<'_> {
-    fn parse(mut self) -> Tree {
-        self.program();
-        self.build_tree()
-    }
-
     /// Parses a program.
     /// ```grammar
     /// program -> declaration* ;
     /// ```
     /// Leading and trailing trivia should be consumed.
     fn program(&mut self) {
-        println!("PROGRAM");
-        let mark = self.open();
+        tracing::debug!("PROGRAM");
+        let mark = self.open(TreeKind::Program);
 
         // Leading trivia
         self.consume_trivia();
 
         while !self.is_eof() {
             let lexeme = Lexer::lexeme(&self.source, &self.tokens[self.current_index]).unwrap();
-            println!(
+            tracing::debug!(
                 "PROGRAM: AT {:?} ({}) [{}, {}/{}]",
-                self.peek(0),
+                self.peek_kind(0),
                 lexeme,
                 self.is_eof(),
                 self.current_index,
                 self.tokens.len()
             );
 
-            self.decl();
+            if self.at_any(DECL_FIRST) {
+                self.decl();
+            } else {
+                self.advance_with_error("declaration");
+            }
             self.consume_trivia();
         }
         self.close(mark, TreeKind::Program);
@@ -255,12 +493,15 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn decl(&mut self) {
-        println!("DECL");
-        match self.peek(0) {
+        tracing::debug!("DECL");
+        match self.peek_kind(0) {
             TokenKind::KeywordVar => self.decl_var(),
             TokenKind::KeywordClass => self.decl_class(),
             TokenKind::KeywordFun => self.decl_fun(),
-            _ => self.stmt(),
+            stmt_first!() => self.stmt(),
+            _ => {
+                self.advance_with_error("declaration");
+            }
         }
     }
 
@@ -276,15 +517,18 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn stmt(&mut self) {
-        println!("STMT");
-        match self.peek(0) {
+        tracing::debug!("STMT");
+        match self.peek_kind(0) {
             TokenKind::KeywordFor => self.stmt_for(),
             TokenKind::KeywordIf => self.stmt_if(),
             TokenKind::KeywordPrint => self.stmt_print(),
             TokenKind::KeywordReturn => self.stmt_return(),
             TokenKind::KeywordWhile => self.stmt_while(),
             TokenKind::LeftBrace => self.stmt_block(),
-            _ => self.stmt_expr(),
+            expr_first!() => self.stmt_expr(),
+            _ => {
+                self.advance_with_error("statement");
+            }
         }
     }
 
@@ -294,12 +538,12 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn decl_fun(&mut self) {
-        println!("FUNCTION DECL");
+        tracing::debug!("DECL FUN");
         assert!(
             self.at(TokenKind::KeywordFun),
             "function decls always begin with `fun`."
         );
-        let mark = self.open();
+        let mark = self.open(TreeKind::StmtFnDecl);
         self.expect(TokenKind::KeywordFun);
         self.consume_trivia();
 
@@ -314,12 +558,12 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn decl_class(&mut self) {
-        println!("CLASS DECL");
+        tracing::debug!("DECL CLASS");
         assert!(
             self.at(TokenKind::KeywordClass),
             "class decls always begin with `class`."
         );
-        let mark = self.open();
+        let mark = self.open(TreeKind::StmtClassDecl);
         self.expect(TokenKind::KeywordClass);
         self.consume_trivia();
 
@@ -344,7 +588,7 @@ impl Parser<'_> {
         while !self.at(TokenKind::RightBrace) && !self.is_eof() {
             // Consume method + trailing trivia
             if self.at(TokenKind::Ident) {
-                let method_mark = self.open();
+                let method_mark = self.open(TreeKind::StmtMethodDecl);
                 self.function();
                 self.close(method_mark, TreeKind::StmtMethodDecl);
                 self.consume_trivia();
@@ -364,7 +608,7 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn function(&mut self) {
-        println!("FUNCTION");
+        tracing::debug!("FUNCTION");
         assert!(
             self.at(TokenKind::Ident),
             "function/method declarations always begin with an identifier."
@@ -391,12 +635,14 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn param_list(&mut self) {
-        println!("PARAM LIST");
+        const PARAM_LIST_RECOVERY: &[TokenKind] = &[TokenKind::LeftBrace, TokenKind::KeywordFun];
+        tracing::debug!("PARAM LIST");
         assert!(
             self.at(TokenKind::LeftParenthesis),
             "parameter lists always begin with `(`."
         );
-        let mark = self.open();
+
+        let mark = self.open(TreeKind::ParamList);
 
         self.expect(TokenKind::LeftParenthesis);
         self.consume_trivia();
@@ -406,10 +652,15 @@ impl Parser<'_> {
             // Consume parameter name + trailing trivia
             if self.at(TokenKind::Ident) {
                 self.param();
-                self.consume_trivia();
             } else {
-                break;
+                // Probably not in a parameter list anymore
+                if self.at_any(PARAM_LIST_RECOVERY) {
+                    break;
+                }
+                // Skip until we find a parameter again
+                self.advance_with_error("parameter");
             }
+            self.consume_trivia();
         }
         // Closing parenthesis
         self.expect(TokenKind::RightParenthesis);
@@ -422,12 +673,12 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn param(&mut self) {
-        println!("PARAM");
+        tracing::debug!("PARAM");
         assert!(
             self.at(TokenKind::Ident),
             "parameters always begin with an identifier."
         );
-        let mark = self.open();
+        let mark = self.open(TreeKind::Param);
 
         self.expect(TokenKind::Ident);
         self.consume_trivia();
@@ -445,12 +696,12 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn stmt_block(&mut self) {
-        println!("BLOCK");
+        tracing::debug!("STMT BLOCK");
         assert!(
             self.at(TokenKind::LeftBrace),
             "blocks always begin with `{{`."
         );
-        let mark = self.open();
+        let mark = self.open(TreeKind::StmtBlock);
 
         self.expect(TokenKind::LeftBrace);
         self.consume_trivia();
@@ -470,12 +721,12 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn stmt_while(&mut self) {
-        println!("WHILE");
+        tracing::debug!("STMT WHILE");
         assert!(
             self.at(TokenKind::KeywordWhile),
             "whiles always begin with `while`."
         );
-        let mark = self.open();
+        let mark = self.open(TreeKind::StmtWhile);
 
         self.expect(TokenKind::KeywordWhile);
         self.consume_trivia();
@@ -500,12 +751,12 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn stmt_for(&mut self) {
-        println!("FOR");
+        tracing::debug!("STMT FOR");
         assert!(
             self.at(TokenKind::KeywordFor),
             "fors always begin with `for`."
         );
-        let mark = self.open();
+        let mark = self.open(TreeKind::StmtFor);
 
         // Keyword for
         self.expect(TokenKind::KeywordFor);
@@ -516,7 +767,7 @@ impl Parser<'_> {
         self.consume_trivia();
 
         // Initializer
-        match self.peek(0) {
+        match self.peek_kind(0) {
             TokenKind::KeywordVar => self.decl_var(),
             TokenKind::Semicolon => {}
             _ => self.stmt_expr(),
@@ -550,12 +801,12 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn decl_var(&mut self) {
-        println!("VAR DECL");
+        tracing::debug!("DECL VAR");
         assert!(
             self.at(TokenKind::KeywordVar),
             "var decls always begin with `var`."
         );
-        let mark = self.open();
+        let mark = self.open(TreeKind::StmtVarDecl);
 
         self.expect(TokenKind::KeywordVar);
         self.consume_trivia();
@@ -579,12 +830,12 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn stmt_var_init(&mut self) {
-        println!("VAR DECL INIT");
+        tracing::debug!("VAR DECL INIT");
         assert!(
             self.at(TokenKind::Equal),
             "var initializers always begin with `=`."
         );
-        let mark = self.open();
+        let mark = self.open(TreeKind::VarDeclInitializer);
 
         self.expect(TokenKind::Equal);
         self.consume_trivia();
@@ -599,12 +850,12 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn stmt_return(&mut self) {
-        println!("RETURN");
+        tracing::debug!("STMT RETURN");
         assert!(
             self.at(TokenKind::KeywordReturn),
             "returns always begin with `return`."
         );
-        let mark = self.open();
+        let mark = self.open(TreeKind::StmtReturn);
 
         self.expect(TokenKind::KeywordReturn);
         self.consume_trivia();
@@ -624,12 +875,12 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn stmt_print(&mut self) {
-        println!("PRINT");
+        tracing::debug!("STMT PRINT");
         assert!(
             self.at(TokenKind::KeywordPrint),
             "prints always begin with `print`."
         );
-        let mark = self.open();
+        let mark = self.open(TreeKind::StmtPrint);
 
         self.expect(TokenKind::KeywordPrint);
         self.consume_trivia();
@@ -647,8 +898,8 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn stmt_expr(&mut self) {
-        println!("EXPR STMT");
-        let mark = self.open();
+        tracing::debug!("STMT EXPR");
+        let mark = self.open(TreeKind::StmtExpr);
 
         self.expr();
         self.consume_trivia();
@@ -664,7 +915,7 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn expr(&mut self) {
-        println!("EXPR");
+        tracing::debug!("EXPR");
         self.expr_recursive(0);
     }
 
@@ -677,7 +928,7 @@ impl Parser<'_> {
         // NOTE(pavyamsiri): Technically we should break if the min_bp is >= the binding power
         // if the operator is valid but as there are no overlaps this works as well.
         loop {
-            let right = self.peek(0);
+            let right = self.peek_kind(0);
 
             // Call operator
             if self.at(TokenKind::LeftParenthesis)
@@ -774,8 +1025,10 @@ impl Parser<'_> {
     /// Returns a mark of where to patch up.
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn expr_delimited(&mut self) -> MarkClosed {
-        let mark = self.open();
-        match self.peek(0) {
+        // TODO(pavyamsiri): This target is wrong but we can't know ahead of time what it is.
+        // Should make a context enum instead of co-opting tree kind.
+        let mark = self.open(TreeKind::ExprGroup);
+        match self.peek_kind(0) {
             // Atoms
             TokenKind::NumericLiteral
             | TokenKind::KeywordTrue
@@ -801,7 +1054,7 @@ impl Parser<'_> {
                 self.advance();
                 self.consume_trivia();
 
-                let rhs = self.expr_recursive(r_bp);
+                self.expr_recursive(r_bp);
                 self.close(mark, TreeKind::ExprPrefix)
             }
             _ => {
@@ -819,12 +1072,12 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn arg_list(&mut self) {
-        println!("ARG LIST");
+        tracing::debug!("ARG LIST");
         assert!(
             self.at(TokenKind::LeftParenthesis),
             "argument lists always begin with `(`."
         );
-        let mark = self.open();
+        let mark = self.open(TreeKind::ArgList);
         self.expect(TokenKind::LeftParenthesis);
         self.consume_trivia();
 
@@ -843,8 +1096,8 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn arg(&mut self) {
-        println!("ARG");
-        let mark = self.open();
+        tracing::debug!("ARG");
+        let mark = self.open(TreeKind::Arg);
 
         self.expr();
         self.consume_trivia();
@@ -862,12 +1115,12 @@ impl Parser<'_> {
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn stmt_if(&mut self) {
-        println!("IF");
+        tracing::debug!("STMT IF");
         assert!(
             self.at(TokenKind::KeywordIf),
             "if statements always begin with `if`."
         );
-        let mark = self.open();
+        let mark = self.open(TreeKind::StmtIf);
 
         self.expect(TokenKind::KeywordIf);
         self.consume_trivia();
@@ -875,23 +1128,36 @@ impl Parser<'_> {
         self.expect(TokenKind::LeftParenthesis);
         self.consume_trivia();
 
+        tracing::debug!("STMT IF CONDITION");
+
         self.expr();
         self.consume_trivia();
 
         self.expect(TokenKind::RightParenthesis);
         self.consume_trivia();
 
-        self.stmt();
+        tracing::debug!("STMT IF BODY");
+        if self.at_any(STMT_FIRST) {
+            self.stmt();
+            self.consume_trivia();
+        } else if self.at_any(STMT_RECOVERY) {
+            self.report_error("statement");
+        }
         self.consume_trivia();
 
         if self.at(TokenKind::KeywordElse) {
             self.expect(TokenKind::KeywordElse);
             self.consume_trivia();
-            self.stmt();
-            self.consume_trivia();
+
+            tracing::debug!("STMT IF ELSE BODY");
+            if self.at_any(STMT_FIRST) {
+                self.stmt();
+                self.consume_trivia();
+            } else if self.at_any(STMT_RECOVERY) {
+                self.report_error("statement");
+            }
         }
 
-        self.expect(TokenKind::Semicolon);
         self.close(mark, TreeKind::StmtIf);
     }
 }
@@ -904,19 +1170,18 @@ mod test {
 
     #[test]
     fn smoke() {
-        let text = r#"// Lox interpreter written in ... Lox!
-// Scanner: converts Lox source code input into tokens
-
-// One-character tokens (values are the ASCII codes)
-var foo = !true or false;
-var foo = -2;
-var LEFT_PAREN = 40;"#;
-        let lookup = SourceLookup::new(text);
+        let text = "
+fun f1(x,
+fun f2(x,, z) {}
+fun f3() {}
+        ";
         let parser = Parser::new(text);
-        let res = parser.parse();
+        let (lookup, res, errors) = parser.parse();
         let mut buffer = String::new();
         res.dump(&lookup, &mut buffer, 0, true)
             .expect("can't handle formatting errors.");
+        println!("{text}");
         println!("{buffer}");
+        println!("{errors:?}");
     }
 }

@@ -1,7 +1,7 @@
 use prox_lexer::token::TokenKind;
 
 /// Return the binding power of the given token if it is a valid infix operator.
-pub fn infix_binding_power(op: TokenKind) -> Option<(u8, u8)> {
+pub const fn infix_binding_power(op: TokenKind) -> Option<(u8, u8)> {
     let bp = match op {
         // 3. Multiplicative operators
         TokenKind::Star | TokenKind::Slash => (13, 14),
@@ -20,7 +20,7 @@ pub fn infix_binding_power(op: TokenKind) -> Option<(u8, u8)> {
 }
 
 /// Return the binding power of the given token if it is a valid short circuiting infix operator.
-pub fn short_circuit_infix_binding_power(op: TokenKind) -> Option<(u8, u8)> {
+pub const fn short_circuit_infix_binding_power(op: TokenKind) -> Option<(u8, u8)> {
     let bp = match op {
         // 7. Logical AND operator
         TokenKind::KeywordAnd => (5, 6),
@@ -32,7 +32,7 @@ pub fn short_circuit_infix_binding_power(op: TokenKind) -> Option<(u8, u8)> {
 }
 
 /// Return the binding power of the given token if it is a valid assignment infix operator.
-pub fn assignment_infix_binding_power(op: TokenKind) -> Option<(u8, u8)> {
+pub const fn assignment_infix_binding_power(op: TokenKind) -> Option<(u8, u8)> {
     let bp = match op {
         // 9. Assignment operator
         TokenKind::Equal => (2, 1),
@@ -42,7 +42,7 @@ pub fn assignment_infix_binding_power(op: TokenKind) -> Option<(u8, u8)> {
 }
 
 /// Return the binding power of the given token if it is a valid prefix operator.
-pub fn prefix_binding_power(op: TokenKind) -> Option<u8> {
+pub const fn prefix_binding_power(op: TokenKind) -> Option<u8> {
     let bp = match op {
         // 2. Unary operators
         TokenKind::Bang | TokenKind::Minus => 15,
@@ -52,7 +52,7 @@ pub fn prefix_binding_power(op: TokenKind) -> Option<u8> {
 }
 
 /// Return the binding power of the given token if it is a valid postfix operator.
-pub fn postfix_binding_power(op: TokenKind) -> Option<u8> {
+pub const fn postfix_binding_power(op: TokenKind) -> Option<u8> {
     let bp = match op {
         // 0. Access operator
         TokenKind::Dot => 19,

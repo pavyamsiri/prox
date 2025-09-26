@@ -240,4 +240,53 @@ impl TokenKind {
     pub const fn is_error(&self) -> bool {
         matches!(self, Self::ErrorUnterminatedString | Self::ErrorUnknownChar)
     }
+
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match *self {
+            Self::LeftParenthesis => "(",
+            Self::RightParenthesis => ")",
+            Self::LeftBrace => "{",
+            Self::RightBrace => "}",
+            Self::Comma => ",",
+            Self::Dot => ".",
+            Self::Minus => "-",
+            Self::Plus => "+",
+            Self::Semicolon => ";",
+            Self::Star => "*",
+            Self::Bang => "!",
+            Self::Equal => "=",
+            Self::LessThan => "<",
+            Self::GreaterThan => ">",
+            Self::Slash => "/",
+            Self::BangEqual => "!=",
+            Self::EqualEqual => "==",
+            Self::LessThanEqual => "<=",
+            Self::GreaterThanEqual => ">=",
+            Self::NumericLiteral => "a numeric literal",
+            Self::StringLiteral => "a string literal",
+            Self::Ident => "an identifier",
+            Self::KeywordAnd => "and",
+            Self::KeywordClass => "class",
+            Self::KeywordElse => "else",
+            Self::KeywordFalse => "false",
+            Self::KeywordFor => "for",
+            Self::KeywordFun => "fun",
+            Self::KeywordIf => "if",
+            Self::KeywordNil => "nil",
+            Self::KeywordOr => "or",
+            Self::KeywordPrint => "print",
+            Self::KeywordReturn => "return",
+            Self::KeywordSuper => "super",
+            Self::KeywordThis => "this",
+            Self::KeywordTrue => "true",
+            Self::KeywordVar => "var",
+            Self::KeywordWhile => "while",
+            Self::Eof => "eof",
+            Self::Whitespace => "whitespace",
+            Self::Comment => "comment",
+            Self::ErrorUnterminatedString => "an unterminated string",
+            Self::ErrorUnknownChar => "an unknown char",
+        }
+    }
 }

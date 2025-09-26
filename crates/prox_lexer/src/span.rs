@@ -11,6 +11,7 @@ pub struct Span {
 
 impl Span {
     /// Convert the span into a range.
+    #[must_use]
     pub const fn range(self) -> ops::Range<usize> {
         self.start..(self.start + self.length)
     }

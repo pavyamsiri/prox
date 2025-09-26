@@ -7,6 +7,10 @@ use prox_lexer::{Lexer, SourceLookup};
 pub enum TreeKind {
     /// An expression atom/literal.
     ExprAtom,
+    /// An expression identifier.
+    ExprIdent,
+    /// An expression super method call.
+    ExprSuperCall,
     /// An expression group i.e. `(expr)`.
     ExprGroup,
     /// A prefixed/unary expression i.e. `!expr`.
@@ -112,6 +116,8 @@ impl TreeKind {
     pub const fn name(self) -> &'static str {
         match self {
             Self::ExprAtom => "an expression literal",
+            Self::ExprIdent => "an identifier",
+            Self::ExprSuperCall => "a super call",
             Self::ExprGroup => "an expression group",
             Self::ExprPrefix => "a unary expression",
             Self::ExprInfix => "a binary expression",

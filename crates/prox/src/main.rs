@@ -1,5 +1,7 @@
+use ariadne::LabelAttach;
 use clap::Parser;
 use color_eyre::Report;
+use prox_lexer::span;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -108,6 +110,52 @@ fn parse(text: &str, path: &Path) -> bool {
             }
             ParseError::Custom(msg) => {
                 ErrorReport::build(ReportKind::Error, 0..0).with_message(msg);
+            }
+            ParseError::Multispan(items) => {
+                let total_span = items
+                    .iter()
+                    .map(|val| val.0)
+                    .reduce(span::Span::merge)
+                    .expect("multispan errors have at least one span.");
+                let mut builder = ErrorReport::build(ReportKind::Error, (path, total_span.range()))
+                    .with_message("Invalid assigment l-value".to_owned())
+                    .with_config(Config::default().with_compact(true));
+
+                for (span, msg) in items {
+                    builder = builder.with_label(
+                        Label::new((path, span.range()))
+                            .with_color(Color::Blue)
+                            .with_message(msg),
+                    );
+                }
+                builder
+                    .finish()
+                    .print((path, Source::from(lookup.get_text())))
+                    .expect("not handling io errors.");
+            }
+            ParseError::InvalidAssignment { lvalue, op, value } => {
+                let total_span = lvalue.0.merge(op).merge(value.0);
+                ErrorReport::build(ReportKind::Error, (path, total_span.range()))
+                    .with_message("Invalid assignment target".to_owned())
+                    .with_config(Config::default().with_label_attach(LabelAttach::Middle))
+                    .with_label(
+                        Label::new((path, value.0.range()))
+                            .with_color(Color::Yellow)
+                            .with_message("tried assigning this value".to_owned())
+                            .with_order(0),
+                    )
+                    .with_label(
+                        Label::new((path, lvalue.0.range()))
+                            .with_color(Color::Red)
+                            .with_message(format!(
+                                "to {} which is not a valid lvalue",
+                                lvalue.1.name()
+                            ))
+                            .with_order(1),
+                    )
+                    .finish()
+                    .print((path, Source::from(lookup.get_text())))
+                    .expect("not handling io errors.");
             }
         }
     }

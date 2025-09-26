@@ -44,8 +44,7 @@ fn tokenize(text: &str) -> bool {
         buffer.clear();
         let token = scanner.next_token();
         succeeded &= token.is_error();
-        scanner
-            .dump_token_cc(&mut buffer, &token)
+        Lexer::dump_token_cc(scanner.get_source(), &mut buffer, &token)
             .expect("writing to a string shouldn't normally error.");
 
         println!("{buffer}");

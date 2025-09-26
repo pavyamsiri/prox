@@ -1,7 +1,11 @@
+extern crate alloc;
+
 use crate::source::SourceLookup;
 use crate::state::{LexerTransition, State};
 use crate::token::{Token, TokenKind};
-use core::fmt;
+use alloc::borrow::Cow;
+use core::iter;
+use core::{convert, fmt};
 
 pub struct Lexer<'src> {
     /// The source text.
@@ -60,10 +64,26 @@ impl<'src> Lexer<'src> {
 
     /// Return the lexeme of a token.
     #[must_use]
-    pub fn lexeme(&self, token: &Token) -> Option<&'src str> {
+    pub const fn get_source(&self) -> &SourceLookup<'src> {
+        &self.source
+    }
+
+    /// Return the lexeme of a token.
+    #[must_use]
+    pub fn lexeme(source: &SourceLookup<'src>, token: &Token) -> Option<Cow<'src, str>> {
         match token.tag {
-            TokenKind::Eof => Some("'eof'"),
-            _ => self.source.get_lexeme(&token.span),
+            TokenKind::Eof => Some("'eof'".into()),
+            TokenKind::Whitespace => {
+                let lexeme = source.get_lexeme(&token.span)?;
+                Some(
+                    lexeme
+                        .replace('\n', "\\n")
+                        .replace('\t', "\\t")
+                        .replace(' ', "_")
+                        .into(),
+                )
+            }
+            _ => source.get_lexeme(&token.span).map(convert::Into::into),
         }
     }
 
@@ -75,24 +95,16 @@ impl<'src> Lexer<'src> {
     /// # Panics
     /// This function will panic if the given token does represent a valid span in the lexer.
     pub fn dump_token_cc(
-        &self,
+        source: &SourceLookup<'src>,
         buffer: &mut impl fmt::Write,
         token: &Token,
     ) -> Result<(), fmt::Error> {
         let lexeme = if token.is_eof() {
-            String::new()
-        } else if token.is_whitespace() {
-            let lexeme = self.lexeme(token).expect("no support for invalid tokens.");
-            lexeme
-                .replace('\n', "\\n")
-                .replace('\t', "\\t")
-                .replace(' ', "_")
+            String::new().into()
         } else {
-            self.lexeme(token)
-                .expect("no support for invalid tokens.")
-                .to_owned()
+            Self::lexeme(source, token).expect("no support for invalid tokens.")
         };
-        let line = self.source.get_line(&token.span).start;
+        let line = source.get_line(&token.span).start;
 
         match token.tag {
             TokenKind::ErrorUnterminatedString => {
@@ -125,5 +137,36 @@ impl<'src> Lexer<'src> {
         }
 
         Ok(())
+    }
+}
+
+impl<'src> iter::IntoIterator for Lexer<'src> {
+    type Item = Token;
+    type IntoIter = TokenIterator<'src>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Self::IntoIter {
+            lexer: self,
+            is_eof: false,
+        }
+    }
+}
+
+pub struct TokenIterator<'src> {
+    lexer: Lexer<'src>,
+    is_eof: bool,
+}
+
+impl iter::Iterator for TokenIterator<'_> {
+    type Item = Token;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.is_eof {
+            None
+        } else {
+            let token = self.lexer.next_token();
+            self.is_eof = token.is_eof();
+            Some(token)
+        }
     }
 }

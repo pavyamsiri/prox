@@ -280,6 +280,9 @@ version = "0.0.0"
 [[package]]
 name = "prox_parser"
 version = "0.0.0"
+dependencies = [
+ "prox_lexer",
+]
 
 [[package]]
 name = "quote"

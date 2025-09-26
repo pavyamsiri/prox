@@ -11,6 +11,7 @@ pub struct Token {
 
 impl Token {
     /// Create an EOF token.
+    #[must_use]
     pub const fn eof(offset: usize) -> Self {
         Self {
             tag: TokenKind::Eof,
@@ -22,24 +23,36 @@ impl Token {
     }
 
     /// Check if the token is EOF.
+    #[must_use]
     pub const fn is_eof(&self) -> bool {
-        matches!(self.tag, TokenKind::Eof)
+        self.tag.is_eof()
     }
 
     /// Check if the token is whitespace.
+    #[must_use]
     pub const fn is_whitespace(&self) -> bool {
-        matches!(self.tag, TokenKind::Whitespace)
+        self.tag.is_whitespace()
+    }
+
+    /// Check if the token is a comment.
+    #[must_use]
+    pub const fn is_comment(&self) -> bool {
+        self.tag.is_comment()
+    }
+
+    /// Check if the token is trivia.
+    #[must_use]
+    pub const fn is_trivia(&self) -> bool {
+        self.tag.is_trivia()
     }
 
     /// Check if the token is an error.
+    #[must_use]
     pub const fn is_error(&self) -> bool {
-        matches!(
-            self.tag,
-            TokenKind::ErrorUnterminatedString | TokenKind::ErrorUnknownChar
-        )
+        self.tag.is_error()
     }
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     // Parentheses
     /// Left parenthesis `(`.
@@ -147,6 +160,7 @@ pub enum TokenKind {
 
 impl TokenKind {
     /// Return the token's CC format representation.
+    #[must_use]
     pub const fn format_cc(self) -> &'static str {
         match self {
             Self::LeftParenthesis => "LEFT_PAREN",
@@ -193,5 +207,37 @@ impl TokenKind {
             Self::Whitespace => "TRIVIA_WHITESPACE",
             Self::Comment => "TRIVIA_COMMENT",
         }
+    }
+}
+
+impl TokenKind {
+    /// Check if the token is EOF.
+    #[must_use]
+    pub const fn is_eof(&self) -> bool {
+        matches!(self, Self::Eof)
+    }
+
+    /// Check if the token is whitespace.
+    #[must_use]
+    pub const fn is_whitespace(&self) -> bool {
+        matches!(self, Self::Whitespace)
+    }
+
+    /// Check if the token is a comment.
+    #[must_use]
+    pub const fn is_comment(&self) -> bool {
+        matches!(self, Self::Comment)
+    }
+
+    /// Check if the token is trivia.
+    #[must_use]
+    pub const fn is_trivia(&self) -> bool {
+        self.is_whitespace() || self.is_comment()
+    }
+
+    /// Check if the token is an error.
+    #[must_use]
+    pub const fn is_error(&self) -> bool {
+        matches!(self, Self::ErrorUnterminatedString | Self::ErrorUnknownChar)
     }
 }

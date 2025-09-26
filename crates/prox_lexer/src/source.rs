@@ -24,6 +24,7 @@ impl SourceChar {
 }
 
 /// An iterator over a source text to be used with lexers.
+#[derive(Debug, Clone)]
 pub struct SourceLookup<'src> {
     /// The source text.
     text: &'src str,
@@ -37,6 +38,7 @@ pub struct SourceLookup<'src> {
 
 impl<'src> SourceLookup<'src> {
     /// Create from a source string.
+    #[must_use]
     pub fn new(source: &'src str) -> Self {
         let mut line_breaks = Vec::new();
         if source.is_empty() {

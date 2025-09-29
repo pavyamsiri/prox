@@ -4,8 +4,8 @@ use crate::cst::operator::{
     assignment_infix_binding_power, infix_binding_power, postfix_binding_power,
     prefix_binding_power, short_circuit_infix_binding_power,
 };
-use crate::cst::tree::{Node, SpannedTree, Tree, TreeKind};
-use core::cell;
+use crate::cst::tree::{Node, Tree, TreeKind};
+use core::{cell, iter};
 use prox_lexer::{
     Lexer, SourceLookup,
     span::Span,
@@ -30,9 +30,9 @@ pub enum ParseError {
     /// Attempted to assign to an invalid l-value.
     InvalidAssignment {
         /// The invalid l-value.
-        lvalue: SpannedTree,
+        lvalue: Span,
         /// The value being assigned.
-        value: SpannedTree,
+        value: Span,
     },
     /// Missing dot after `super`.
     MissingDotAfterSuper {
@@ -73,8 +73,8 @@ pub enum ParseError {
     InvalidSuperclass {
         /// The class declaration.
         class_decl: Span,
-        /// The actual tree that isn't the super class name.
-        actual: SpannedTree,
+        /// The tree that isn't the super class name.
+        actual: Span,
     },
 }
 
@@ -85,6 +85,8 @@ enum Event {
     Open {
         /// The type of tree being constructed.
         kind: TreeKind,
+        /// Pointer to open event that logically occurs before this event.
+        open_before: Option<usize>,
     },
     /// Close the currently open tree.
     Close,
@@ -100,6 +102,52 @@ struct MarkOpened {
 #[derive(Debug, Clone, Copy)]
 struct MarkClosed {
     index: usize,
+}
+
+struct EventIterator<'event> {
+    events: &'event [Event],
+    visited: Vec<bool>,
+    stack: Vec<usize>,
+}
+
+impl<'event> EventIterator<'event> {
+    fn new(events: &'event [Event]) -> Self {
+        let visited = vec![false; events.len()];
+        let stack = (0..events.len()).rev().collect();
+        Self {
+            events,
+            visited,
+            stack,
+        }
+    }
+}
+
+impl<'event> iter::Iterator for EventIterator<'event> {
+    type Item = (usize, &'event Event);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(event_index) = self.stack.pop() {
+            if self.visited[event_index] {
+                continue;
+            }
+
+            let event = &self.events[event_index];
+            match event {
+                &Event::Open {
+                    open_before: Some(next_index),
+                    ..
+                } if !self.visited[next_index] => {
+                    self.stack.push(event_index);
+                    self.stack.push(next_index);
+                }
+                ev => {
+                    self.visited[event_index] = true;
+                    return Some((event_index, ev));
+                }
+            }
+        }
+        None
+    }
 }
 
 pub struct Parser<'src> {
@@ -160,22 +208,30 @@ impl Parser<'_> {
         };
         self.events.push(Event::Open {
             kind: TreeKind::Error,
+            open_before: None,
         });
         mark
     }
 
     fn open_before(&mut self, old_mark: MarkClosed) -> MarkOpened {
         let mark = MarkOpened {
-            index: old_mark.index,
+            index: self.events.len(),
         };
-        // TODO(pavyamsiri): It is unoptimal to insert like this ~O(N) to rearrange elements.
-        // Should use an index based link list approach to be able to just insert at the end.
-        self.events.insert(
-            old_mark.index,
-            Event::Open {
-                kind: TreeKind::Error,
-            },
-        );
+        let old_kind = if let Event::Open { kind, .. } = self.events[old_mark.index] {
+            kind
+        } else {
+            tracing::warn!("Opening event that is not an open event!");
+            TreeKind::Error
+        };
+
+        self.events.push(Event::Open {
+            kind: TreeKind::Error,
+            open_before: None,
+        });
+        self.events[old_mark.index] = Event::Open {
+            kind: old_kind,
+            open_before: Some(mark.index),
+        };
         mark
     }
 
@@ -185,7 +241,12 @@ impl Parser<'_> {
     }
 
     fn close(&mut self, mark: MarkOpened, kind: TreeKind) -> MarkClosed {
-        self.events[mark.index] = Event::Open { kind };
+        let open_before = if let Event::Open { open_before, .. } = self.events[mark.index] {
+            open_before
+        } else {
+            None
+        };
+        self.events[mark.index] = Event::Open { kind, open_before };
         self.events.push(Event::Close);
         MarkClosed { index: mark.index }
     }
@@ -299,19 +360,13 @@ impl Parser<'_> {
         self.current_index >= self.tokens.len() || self.at(TokenKind::Eof)
     }
 
-    fn get_tree_kind(&self, index: usize) -> Option<TreeKind> {
-        if let Event::Open { kind } = self.events[index] {
-            Some(kind)
-        } else {
-            None
-        }
-    }
-
     fn get_span_between(&self, lhs: MarkClosed, rhs: Option<MarkClosed>) -> Span {
         let mut span: Option<Span> = None;
         let mut token_iter = self.tokens.iter();
         let end = rhs.map_or(self.events.len(), |val| val.index);
-        for (index, event) in self.events.iter().enumerate() {
+        let event_iterator = EventIterator::new(&self.events);
+        let mut in_span = false;
+        for (index, event) in event_iterator {
             let token = match *event {
                 Event::Advance => {
                     let token = token_iter.next().unwrap();
@@ -319,9 +374,14 @@ impl Parser<'_> {
                 }
                 _ => None,
             };
+            if index == lhs.index {
+                in_span = true;
+            } else if index == end {
+                in_span = false;
+            }
             if let Some(token) = token
-                && (lhs.index..end).contains(&index)
-                && !token.is_whitespace()
+                && in_span
+                && !token.is_trivia()
             {
                 span = span.map_or(Some(token.span), |existing_span| {
                     Some(existing_span.merge(token.span))
@@ -345,9 +405,10 @@ impl<'src> Parser<'src> {
             "the last event should always be a close event."
         );
 
-        for event in events {
-            match event {
-                Event::Open { kind } => {
+        let event_iterator = EventIterator::new(&events);
+        for (_, event) in event_iterator {
+            match *event {
+                Event::Open { kind, .. } => {
                     stack.push(Tree {
                         tag: kind,
                         children: Vec::new(),
@@ -550,10 +611,7 @@ impl Parser<'_> {
 
                 self.report_error(ParseError::InvalidSuperclass {
                     class_decl: class_start.span.merge(class_end.span),
-                    actual: SpannedTree {
-                        tag: self.get_tree_kind(mark.index).expect("valid open mark."),
-                        span: self.get_span_between(expr_mark, None),
-                    },
+                    actual: self.get_span_between(expr_mark, None),
                 });
                 self.consume_trivia();
             }
@@ -1081,10 +1139,6 @@ impl Parser<'_> {
         let op = self.advance();
         self.consume_trivia();
 
-        let inner_lhs = MarkClosed {
-            index: mark.index + 1,
-        };
-
         let rhs = self.expr_recursive(r_bp);
         self.pop_expr_context();
         let new_lhs = self.close(mark, TreeKind::ExprInfixAssignment);
@@ -1095,22 +1149,13 @@ impl Parser<'_> {
         if !matches!(
             lhs_open,
             Event::Open {
-                kind: TreeKind::ExprIdent
+                kind: TreeKind::ExprIdent,
+                ..
             }
         ) {
-            let lvalue = self.get_span_between(inner_lhs, Some(op));
-            let value_span = self.get_span_between(rhs.unwrap(), None);
-            let lhs_kind = self.get_tree_kind(mark.index + 1).unwrap();
-            self.report_error(ParseError::InvalidAssignment {
-                lvalue: SpannedTree {
-                    tag: lhs_kind,
-                    span: lvalue,
-                },
-                value: SpannedTree {
-                    tag: self.get_tree_kind(rhs.unwrap().index).unwrap(),
-                    span: value_span,
-                },
-            });
+            let lvalue = self.get_span_between(lhs, Some(op));
+            let value = self.get_span_between(rhs.unwrap(), None);
+            self.report_error(ParseError::InvalidAssignment { lvalue, value });
         }
         new_lhs
     }

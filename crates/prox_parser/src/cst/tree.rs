@@ -1,15 +1,6 @@
 use core::fmt;
-use prox_lexer::span::Span;
 use prox_lexer::token::Token;
 use prox_lexer::{Lexer, SourceLookup};
-
-#[derive(Debug, Clone, Copy)]
-pub struct SpannedTree {
-    /// The type of tree.
-    pub tag: TreeKind,
-    /// The span of the tree in text.
-    pub span: Span,
-}
 
 #[derive(Debug, Clone, Copy)]
 pub enum TreeKind {

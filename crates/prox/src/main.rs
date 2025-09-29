@@ -4,7 +4,7 @@ use clap::Parser as CLParser;
 use color_eyre::Report;
 use prox_lexer::span::Span;
 use prox_lexer::token::Token;
-use prox_parser::cst::{ParseError, Parser, SpannedTree};
+use prox_parser::cst::{ParseError, Parser};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -140,6 +140,8 @@ fn parse(text: &str, path: &Path) -> bool {
         }
     }
 
+    println!("{buffer}");
+
     true
 }
 
@@ -187,24 +189,21 @@ fn format_missing_super_dot(path: &str, text: &str, super_token: Token, actual: 
         .expect("not handling io errors.");
 }
 
-fn format_invalid_assignment(path: &str, text: &str, lvalue: SpannedTree, value: SpannedTree) {
-    let total_span = lvalue.span.merge(value.span);
+fn format_invalid_assignment(path: &str, text: &str, lvalue: Span, value: Span) {
+    let total_span = lvalue.merge(value);
     ErrorReport::build(ReportKind::Error, (path, total_span.range()))
         .with_message("Invalid assignment target".to_owned())
         .with_config(Config::default().with_label_attach(LabelAttach::Middle))
         .with_label(
-            Label::new((path, value.span.range()))
+            Label::new((path, value.range()))
                 .with_color(Color::Yellow)
                 .with_message("tried assigning this value".to_owned())
                 .with_order(0),
         )
         .with_label(
-            Label::new((path, lvalue.span.range()))
+            Label::new((path, lvalue.range()))
                 .with_color(Color::Red)
-                .with_message(format!(
-                    "to {} which is not a valid lvalue",
-                    lvalue.tag.name()
-                ))
+                .with_message("to an invalid lvalue")
                 .with_order(1),
         )
         .finish()
@@ -256,14 +255,21 @@ fn format_missing_comma(path: &str, text: &str, context: &'static str, actual: T
         .expect("not handling io errors.");
 }
 
-fn format_invalid_superclass(path: &str, text: &str, class_decl: Span, actual: SpannedTree) {
-    ErrorReport::build(ReportKind::Error, (path, actual.span.range()))
+fn format_invalid_superclass(path: &str, text: &str, class_decl: Span, actual: Span) {
+    ErrorReport::build(ReportKind::Error, (path, actual.range()))
         .with_message("Superclass must be an identifier.".to_owned())
         .with_config(Config::default())
         .with_label(
-            Label::new((path, actual.span.range()))
+            Label::new((path, actual.range()))
                 .with_color(Color::Red)
-                .with_message("is not an identifier.".to_owned()),
+                .with_message("is not an identifier.".to_owned())
+                .with_order(0),
+        )
+        .with_label(
+            Label::new((path, class_decl.range()))
+                .with_color(Color::Yellow)
+                .with_message("class declared here".to_owned())
+                .with_order(1),
         )
         .finish()
         .print((path, Source::from(text)))

@@ -4,28 +4,65 @@ use prox_lexer::{Lexer, SourceLookup};
 
 #[derive(Debug, Clone, Copy)]
 pub enum TreeKind {
-    /// An expression atom/literal.
-    ExprAtom,
-    /// An expression identifier.
+    /// A atom/literal.
+    ExprThis,
+    /// An identifier.
     ExprIdent,
-    /// An expression super method call i.e. `super.method`.
+    /// Literal true.
+    ExprTrue,
+    /// Literal false.
+    ExprFalse,
+    /// Literal nil.
+    ExprNil,
+    /// String literal.
+    ExprStringLiteral,
+    /// Numeric literal.
+    ExprNumericLiteral,
+    /// An super method call i.e. `super.method`.
     ExprSuperCall,
     /// An expression group i.e. `(expr)`.
     ExprGroup,
-    /// A prefixed/unary expression i.e. `!expr`.
-    ExprPrefix,
-    /// An infix/binary expression i.e. `expr + expr`.
-    ExprInfix,
+
     /// An infix/binary assignment expression i.e. `expr = expr`.
-    ExprInfixAssignment,
-    /// An infix/binary short circuitable expression i.e. `expr and expr`.
-    ExprInfixShortCircuit,
+    ExprBinaryAssignment,
     /// An expression call `expr(params)`.
     ExprCall,
     /// An expression get `expr.field`.
     ExprGet,
     /// An expression set `expr.field = value`.
     ExprSet,
+
+    // Unary expressions.
+    /// An expression prefixed with `!`, `!expr`.
+    ExprUnaryBang,
+    /// An expression prefixed with `-`, `-expr`.
+    ExprUnaryMinus,
+
+    // Binary expressions.
+    /// A binary expression with `+`, `left + right`.
+    ExprBinaryPlus,
+    /// A binary expression with `-`, `left - right`.
+    ExprBinaryMinus,
+    /// A binary expression with `*`, `left * right`.
+    ExprBinaryStar,
+    /// A binary expression with `/`, `left / right`.
+    ExprBinarySlash,
+    /// A binary expression with `<`, `left < right`.
+    ExprBinaryLess,
+    /// A binary expression with `<=`, `left <= right`.
+    ExprBinaryLessEqual,
+    /// A binary expression with `>`, `left > right`.
+    ExprBinaryGreater,
+    /// A binary expression with `>=`, `left >= right`.
+    ExprBinaryGreaterEqual,
+    /// A binary expression with `==`, `left == right`.
+    ExprBinaryEqualEqual,
+    /// A binary expression with `!=`, `left != right`.
+    ExprBinaryBangEqual,
+    /// A binary expression with `and`, `left and right`.
+    ExprBinaryAnd,
+    /// A binary expression with `or`, `left or right`.
+    ExprBinaryOr,
 
     /// The topmost level structure.
     Program,
@@ -122,35 +159,51 @@ impl TreeKind {
     /// Return the name of the tree type.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::ExprAtom => "an expression literal",
-            Self::ExprIdent => "an identifier",
-            Self::ExprSuperCall => "a super call",
-            Self::ExprGroup => "an expression group",
-            Self::ExprPrefix => "a unary expression",
-            Self::ExprInfix => "a binary expression",
-            Self::ExprInfixAssignment => "an assignment expression",
-            Self::ExprInfixShortCircuit => "a short circuiting binary expression",
-            Self::ExprCall => "an expression call",
-            Self::ExprGet => "a field access",
-            Self::ExprSet => "a field set",
-            Self::Program => "the program",
-            Self::StmtFnDecl => "a function declaration",
-            Self::StmtVarDecl => "a variable declaration",
-            Self::StmtClassDecl => "a class declaration",
-            Self::StmtMethodDecl => "a method declaration",
-            Self::StmtBlock => "a block statement",
-            Self::StmtReturn => "a return statement",
-            Self::StmtExpr => "an expression statement",
-            Self::StmtPrint => "a print statement",
-            Self::StmtIf => "an if statement",
-            Self::StmtWhile => "a while statement",
-            Self::StmtFor => "a for statement",
-            Self::ParamList => "a parameter list",
-            Self::Param => "a parameter",
-            Self::VarDeclInitializer => "a variable declaration initializer",
-            Self::ArgList => "an argument list",
-            Self::Arg => "an argument",
-            Self::Error => "an error",
+            TreeKind::ExprThis => "a keyword this",
+            TreeKind::ExprTrue => "a keyword true",
+            TreeKind::ExprFalse => "a keyword false",
+            TreeKind::ExprNil => "a keyword nil",
+            TreeKind::ExprStringLiteral => "a string literal",
+            TreeKind::ExprNumericLiteral => "a numeric literal",
+            TreeKind::ExprIdent => "an identifier",
+            TreeKind::ExprSuperCall => "a super call",
+            TreeKind::ExprGroup => "an expression group",
+            TreeKind::ExprBinaryAssignment => "an assignment expression",
+            TreeKind::ExprCall => "an expression call",
+            TreeKind::ExprGet => "a field access",
+            TreeKind::ExprSet => "a field set",
+            TreeKind::Program => "the program",
+            TreeKind::StmtFnDecl => "a function declaration",
+            TreeKind::StmtVarDecl => "a variable declaration",
+            TreeKind::StmtClassDecl => "a class declaration",
+            TreeKind::StmtMethodDecl => "a method declaration",
+            TreeKind::StmtBlock => "a block statement",
+            TreeKind::StmtReturn => "a return statement",
+            TreeKind::StmtExpr => "an expression statement",
+            TreeKind::StmtPrint => "a print statement",
+            TreeKind::StmtIf => "an if statement",
+            TreeKind::StmtWhile => "a while statement",
+            TreeKind::StmtFor => "a for statement",
+            TreeKind::ParamList => "a parameter list",
+            TreeKind::Param => "a parameter",
+            TreeKind::VarDeclInitializer => "a variable declaration initializer",
+            TreeKind::ArgList => "an argument list",
+            TreeKind::Arg => "an argument",
+            TreeKind::Error => "an error",
+            TreeKind::ExprUnaryBang => "a unary boolean negation",
+            TreeKind::ExprUnaryMinus => "a unary numeric negation",
+            TreeKind::ExprBinaryPlus => "a binary addition",
+            TreeKind::ExprBinaryMinus => "a binary subtraction",
+            TreeKind::ExprBinaryStar => "a binary multiplication",
+            TreeKind::ExprBinarySlash => "a binary division",
+            TreeKind::ExprBinaryLess => "a binary less than",
+            TreeKind::ExprBinaryLessEqual => "a binary less than or equal",
+            TreeKind::ExprBinaryGreater => "a binary greater than",
+            TreeKind::ExprBinaryGreaterEqual => "a binary greater than or equal",
+            TreeKind::ExprBinaryEqualEqual => "a binary equality",
+            TreeKind::ExprBinaryBangEqual => "a binary inequality",
+            TreeKind::ExprBinaryAnd => "a binary and",
+            TreeKind::ExprBinaryOr => "a binary or",
         }
     }
 }

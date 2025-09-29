@@ -3,6 +3,7 @@ members = [
     "crates/prox_lexer",
     "crates/prox",
     "crates/prox_parser",
+    "crates/prox_interner",
 ]
 resolver = "3"
 

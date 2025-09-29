@@ -331,6 +331,7 @@ version = "0.0.0"
 name = "prox_parser"
 version = "0.0.0"
 dependencies = [
+ "prox_interner",
  "prox_lexer",
  "tracing",
 ]

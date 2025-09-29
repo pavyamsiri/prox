@@ -4,8 +4,10 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
-prox_lexer = { workspace = true }
 tracing = { workspace = true }
+
+prox_interner = { workspace = true }
+prox_lexer = { workspace = true }
 
 [lints]
 workspace = true

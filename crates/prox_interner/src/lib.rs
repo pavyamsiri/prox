@@ -6,6 +6,14 @@ use std::hash;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Symbol(u32);
 
+impl Symbol {
+    /// Return the raw symbol.
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
 /// A span over bytes.
 #[derive(Debug, Clone, Copy)]
 struct Span {
@@ -40,6 +48,16 @@ pub struct Interner<S = hash::DefaultHasher> {
 }
 
 impl<S> Interner<S> {
+    /// Create a new interner.
+    pub fn with_hasher(hasher: S) -> Self {
+        Self {
+            string_to_symbol: HashMap::new(),
+            symbol_to_span: Vec::new(),
+            data: String::new(),
+            hasher,
+        }
+    }
+
     /// Resolve an interned symbol into a string.
     /// Returns `None` if the given symbol is invalid.
     pub fn resolve(&self, symbol: Symbol) -> Option<&str> {

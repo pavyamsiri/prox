@@ -14,6 +14,7 @@ color-eyre = "0.6.5"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
+prox_interner = { path = "crates/prox_interner" }
 prox_lexer = { path = "crates/prox_lexer" }
 prox_parser = { path = "crates/prox_parser" }
 

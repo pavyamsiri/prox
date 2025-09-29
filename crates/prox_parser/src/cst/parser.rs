@@ -930,7 +930,7 @@ impl Parser<'_> {
 
     /// Parses a for statement.
     /// ```grammar
-    /// forStmt -> "for" "(" (varDecl | exprStmt | ";") expression? ";" expression? ")" statement ;
+    /// forStmt -> "for" "(" (varDecl | exprStmt)? ";" expression? ";" expression? ")" statement ;
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn stmt_for(&mut self) {

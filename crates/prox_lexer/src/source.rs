@@ -6,6 +6,75 @@ use core::cmp;
 use core::ops;
 use core::str::CharIndices;
 
+/// Interface of helper functions to deal with tokens and spans.
+#[derive(Debug, Clone)]
+pub struct SourceCode<'src> {
+    /// The source text.
+    text: &'src str,
+    /// A cache for line numbers.
+    line_breaks: Vec<ops::Range<usize>>,
+}
+
+impl<'src> SourceCode<'src> {
+    /// Create a new source code helper.
+    #[must_use]
+    pub fn new(lookup: &SourceLookup<'src>) -> Self {
+        Self {
+            text: lookup.get_text(),
+            line_breaks: lookup.line_breaks.clone(),
+        }
+    }
+
+    /// Return the source.
+    #[must_use]
+    pub const fn get_text(&self) -> &'src str {
+        self.text
+    }
+
+    /// Return the lexeme associated with the given span if the span is valid.
+    #[must_use]
+    pub fn get_lexeme(&self, span: &Span) -> Option<&'src str> {
+        let range = span.range();
+        if range.end > self.text.len() {
+            return None;
+        }
+        Some(&self.text[range])
+    }
+
+    /// Return the line numbers of a span.
+    ///
+    /// If the span is invalid, the maximum line number is returned.
+    #[must_use]
+    pub fn get_line(&self, span: &Span) -> ops::Range<usize> {
+        let max_line = self.line_breaks.len() + 1;
+        let range = span.range();
+        let create_closure = move |offset: usize| {
+            move |rge: &ops::Range<usize>| {
+                if offset < rge.start {
+                    cmp::Ordering::Greater
+                } else if offset >= rge.end {
+                    cmp::Ordering::Less
+                } else {
+                    cmp::Ordering::Equal
+                }
+            }
+        };
+
+        let start = self
+            .line_breaks
+            .binary_search_by(create_closure(range.start))
+            .map(|val| val + 1)
+            .unwrap_or(max_line);
+        let end = self
+            .line_breaks
+            .binary_search_by(create_closure(range.end))
+            .map(|val| val + 1)
+            .ok()
+            .unwrap_or(max_line);
+        start..end
+    }
+}
+
 /// Represents a source character.
 #[derive(Debug, Clone, Copy)]
 pub struct SourceChar {

@@ -4,17 +4,77 @@ use crate::cst::operator::{
     assignment_infix_binding_power, infix_binding_power, postfix_binding_power,
     prefix_binding_power, short_circuit_infix_binding_power,
 };
-use crate::cst::tree::{Node, Tree, TreeKind};
+use crate::cst::tree::{Cst, Node, TreeKind};
 use core::fmt;
 use core::{cell, iter};
+use prox_lexer::SourceCode;
 use prox_lexer::{
-    Lexer, SourceLookup,
+    Lexer,
     span::Span,
     token::{Token, TokenKind},
 };
 use sets::{
     BINARY_OP_ONLY, DECL_FIRST, EXPR_FIRST, STMT_FIRST, STMT_RECOVERY, expr_first, stmt_first,
 };
+
+/// The result of the parser.
+type ParseResult<'src> = Result<CorrectParse<'src>, IncorrectParse<'src>>;
+
+/// A result of a correct parse.
+#[derive(Debug)]
+pub struct CorrectParse<'src> {
+    /// The program root.
+    pub root: Cst,
+    /// The source code.
+    pub source: SourceCode<'src>,
+}
+
+impl CorrectParse<'_> {
+    /// Dump the CST.
+    ///
+    /// # Panics
+    /// If parsed tree does not correspond to the given the source lookup.
+    ///
+    /// # Errors
+    /// Can error if the given buffer becomes full.
+    pub fn dump(
+        &self,
+        buffer: &mut impl fmt::Write,
+        level: usize,
+        skip_trivia: bool,
+    ) -> Result<(), fmt::Error> {
+        self.root.dump(&self.source, buffer, level, skip_trivia)
+    }
+}
+
+/// A result of an incorrect parse.
+#[derive(Debug)]
+pub struct IncorrectParse<'src> {
+    /// The program root.
+    pub root: Cst,
+    /// The source code.
+    pub source: SourceCode<'src>,
+    /// The parse errors.
+    pub errors: Vec<ParseError>,
+}
+
+impl IncorrectParse<'_> {
+    /// Dump the CST.
+    ///
+    /// # Panics
+    /// If parsed tree does not correspond to the given the source lookup.
+    ///
+    /// # Errors
+    /// Can error if the given buffer becomes full.
+    pub fn dump(
+        &self,
+        buffer: &mut impl fmt::Write,
+        level: usize,
+        skip_trivia: bool,
+    ) -> Result<(), fmt::Error> {
+        self.root.dump(&self.source, buffer, level, skip_trivia)
+    }
+}
 
 /// The parsing context at the declaration/statement level.
 #[derive(Debug)]
@@ -271,7 +331,7 @@ impl<'event> iter::Iterator for EventIterator<'event> {
 }
 
 pub struct Parser<'src> {
-    source: SourceLookup<'src>,
+    source: SourceCode<'src>,
     tokens: Vec<Token>,
     current_index: usize,
     fuel: cell::Cell<u32>,
@@ -513,7 +573,11 @@ impl Parser<'_> {
 
 impl<'src> Parser<'src> {
     /// Construct the CST.
-    fn build_tree(self) -> (SourceLookup<'src>, Tree, Vec<ParseError>) {
+    #[expect(
+        clippy::result_large_err,
+        reason = "neither the ok and err variants are unlikely."
+    )]
+    fn build_tree(self) -> ParseResult<'src> {
         let mut tokens = self.tokens.into_iter();
         let mut events = self.events;
         let mut stack = Vec::new();
@@ -528,7 +592,7 @@ impl<'src> Parser<'src> {
         for (_, event) in event_iterator {
             match *event {
                 Event::Open { kind, .. } => {
-                    stack.push(Tree {
+                    stack.push(Cst {
                         tag: kind,
                         children: Vec::new(),
                     });
@@ -570,18 +634,34 @@ impl<'src> Parser<'src> {
             "there should always be a single tree by the end."
         );
 
-        (
-            self.source,
-            stack
-                .pop()
-                .expect("we just asserted that there was one left in the stack."),
-            self.errors,
-        )
+        let root = stack
+            .pop()
+            .expect("we just asserted that there was one left in the stack.");
+        if self.errors.is_empty() {
+            Ok(CorrectParse {
+                root,
+                source: self.source,
+            })
+        } else {
+            Err(IncorrectParse {
+                root,
+                source: self.source,
+                errors: self.errors,
+            })
+        }
     }
 }
 
 impl<'src> Parser<'src> {
-    pub fn parse(mut self) -> (SourceLookup<'src>, Tree, Vec<ParseError>) {
+    /// Parse the source code and return either a correct or incorrect parse tree.
+    ///
+    /// # Errors
+    /// If the given source code is malformed then the parse will not succeed.
+    #[expect(
+        clippy::result_large_err,
+        reason = "neither the ok and err variants are unlikely."
+    )]
+    pub fn parse(mut self) -> Result<CorrectParse<'src>, IncorrectParse<'src>> {
         self.program();
         self.build_tree()
     }
@@ -1560,27 +1640,5 @@ impl Parser<'_> {
 
         self.pop_stmt_context();
         self.close(mark, TreeKind::StmtIf);
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use crate::cst::parser::Parser;
-
-    #[test]
-    fn smoke() {
-        let text = "
-fun f1(x,
-fun f2(x,, z) {}
-fun f3() {}
-        ";
-        let parser = Parser::new(text);
-        let (lookup, res, errors) = parser.parse();
-        let mut buffer = String::new();
-        res.dump(&lookup, &mut buffer, 0, true)
-            .expect("can't handle formatting errors.");
-        println!("{text}");
-        println!("{buffer}");
-        println!("{errors:?}");
     }
 }

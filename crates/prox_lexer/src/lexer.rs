@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use crate::SourceCode;
 use crate::source::SourceLookup;
 use crate::state::{LexerTransition, State};
 use crate::token::{Token, TokenKind};
@@ -64,13 +65,13 @@ impl<'src> Lexer<'src> {
 
     /// Return the lexeme of a token.
     #[must_use]
-    pub const fn get_source(&self) -> &SourceLookup<'src> {
-        &self.source
+    pub fn get_source(&self) -> SourceCode<'src> {
+        SourceCode::new(&self.source)
     }
 
     /// Return the lexeme of a token.
     #[must_use]
-    pub fn lexeme(source: &SourceLookup<'src>, token: &Token) -> Option<Cow<'src, str>> {
+    pub fn lexeme(source: &SourceCode<'src>, token: &Token) -> Option<Cow<'src, str>> {
         match token.tag {
             TokenKind::Eof => Some("'eof'".into()),
             TokenKind::Whitespace => {
@@ -95,7 +96,7 @@ impl<'src> Lexer<'src> {
     /// # Panics
     /// This function will panic if the given token does represent a valid span in the lexer.
     pub fn dump_token_cc(
-        source: &SourceLookup<'src>,
+        source: &SourceCode<'src>,
         buffer: &mut impl fmt::Write,
         token: &Token,
     ) -> Result<(), fmt::Error> {

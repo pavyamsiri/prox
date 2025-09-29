@@ -14,6 +14,12 @@ impl Symbol {
     }
 }
 
+impl From<u32> for Symbol {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
 /// A span over bytes.
 #[derive(Debug, Clone, Copy)]
 struct Span {
@@ -66,7 +72,7 @@ impl<S> Interner<S> {
     }
 }
 
-impl<S: hash::BuildHasher> Interner<S> {
+impl<S: hash::Hasher> Interner<S> {
     /// Return a symbol representing the interned string.
     ///
     /// # Panics
@@ -105,7 +111,8 @@ impl<S: hash::BuildHasher> Interner<S> {
     }
 
     /// Hash a string.
-    fn hash_string(&self, text: &str) -> HashedString {
-        self.hasher.hash_one(text)
+    fn hash_string(&mut self, text: &str) -> HashedString {
+        self.hasher.write(text.as_bytes());
+        self.hasher.finish()
     }
 }

@@ -5,7 +5,7 @@ mod state;
 pub mod token;
 
 pub use lexer::Lexer;
-pub use source::SourceLookup;
+pub use source::{SourceCode, SourceLookup};
 
 #[cfg(test)]
 mod test {
@@ -24,7 +24,7 @@ mod test {
             }
         }
         for token in tokens {
-            let lexeme = Lexer::lexeme(lexer.get_source(), &token)
+            let lexeme = Lexer::lexeme(&lexer.get_source(), &token)
                 .expect("Token came from lexer so it is guaranteed to be valid.");
             if token.is_error() {
                 println!("ERROR: {token:?} -> {lexeme}");

@@ -4,7 +4,7 @@ use clap::Parser as CLParser;
 use color_eyre::Report;
 use prox_lexer::span::Span;
 use prox_lexer::token::Token;
-use prox_parser::cst::{ParseError, Parser};
+use prox_parser::cst::parser::{IncorrectParse, ParseError, Parser};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -67,7 +67,7 @@ fn tokenize(text: &str) -> bool {
         buffer.clear();
         let token = scanner.next_token();
         succeeded &= token.is_error();
-        Lexer::dump_token_cc(scanner.get_source(), &mut buffer, &token)
+        Lexer::dump_token_cc(&scanner.get_source(), &mut buffer, &token)
             .expect("writing to a string shouldn't normally error.");
 
         println!("{buffer}");
@@ -81,12 +81,24 @@ fn parse(text: &str, path: &Path) -> bool {
     let path = &path.to_string_lossy();
 
     let parser = Parser::new(text);
-    let (lookup, res, errors) = parser.parse();
+    let result = parser.parse();
     let mut buffer = String::new();
-    res.dump(&lookup, &mut buffer, 0, true)
-        .expect("can't handle formatting errors.");
 
-    for error in errors {
+    let parse_tree = match result {
+        Ok(tree) => {
+            tree.dump(&mut buffer, 0, true)
+                .expect("can't handle formatting errors.");
+            println!("{buffer}");
+            return true;
+        }
+        Err(tree) => {
+            tree.dump(&mut buffer, 0, true)
+                .expect("can't handle formatting errors.");
+            tree
+        }
+    };
+
+    for error in parse_tree.errors {
         match error {
             ParseError::Expected {
                 actual,
@@ -105,7 +117,7 @@ fn parse(text: &str, path: &Path) -> bool {
                             )),
                     )
                     .finish()
-                    .print((path, Source::from(lookup.get_text())))
+                    .print((path, Source::from(text)))
                     .expect("not handling io errors.");
             }
             ParseError::InvalidAssignment { lvalue, value } => {
@@ -140,9 +152,7 @@ fn parse(text: &str, path: &Path) -> bool {
         }
     }
 
-    println!("{buffer}");
-
-    true
+    false
 }
 
 fn format_missing_super_method(path: &str, text: &str, super_token: Token, actual: Token) {

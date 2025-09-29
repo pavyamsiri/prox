@@ -1,8 +1,11 @@
+pub mod typed_trees;
+
 use core::fmt;
 use prox_lexer::token::Token;
-use prox_lexer::{Lexer, SourceLookup};
+use prox_lexer::{Lexer, SourceCode};
 
-#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeKind {
     /// A atom/literal.
     ExprThis,
@@ -110,7 +113,7 @@ pub enum TreeKind {
 
 /// A parse tree.
 #[derive(Debug)]
-pub struct Tree {
+pub struct Cst {
     /// The type of parse tree.
     pub tag: TreeKind,
     /// The children of the tree.
@@ -123,14 +126,38 @@ pub enum Node {
     /// A leaf node.
     Token(Token),
     /// A sub-tree.
-    Tree(Tree),
+    Tree(Cst),
 }
 
-impl Tree {
+impl Node {
+    /// Return the underlying token if the node is a token.
+    pub fn token(&self) -> Option<&Token> {
+        match *self {
+            Node::Token(ref token) => Some(token),
+            Node::Tree(_) => None,
+        }
+    }
+
+    /// Return the underlying tree if the node is a tree.
+    pub fn tree(&self) -> Option<&Cst> {
+        match *self {
+            Node::Token(_) => None,
+            Node::Tree(ref tree) => Some(tree),
+        }
+    }
+}
+
+impl Cst {
     /// Dump the CST.
+    ///
+    /// # Panics
+    /// If parsed tree does not correspond to the given the source lookup.
+    ///
+    /// # Errors
+    /// Can error if the given buffer becomes full.
     pub fn dump(
         &self,
-        lookup: &SourceLookup<'_>,
+        lookup: &SourceCode<'_>,
         buffer: &mut impl fmt::Write,
         level: usize,
         skip_trivia: bool,
@@ -157,6 +184,7 @@ impl Tree {
 
 impl TreeKind {
     /// Return the name of the tree type.
+    #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             TreeKind::ExprThis => "a keyword this",

@@ -5,14 +5,14 @@ use crate::token::{Token, TokenKind};
 
 /// The state after seeing an opening double quote.
 #[derive(Debug)]
-pub struct StringState {
+pub(crate) struct StringState {
     /// The byte offset of the opening quote.
-    pub start: usize,
+    pub(crate) start: usize,
 }
 
 impl StringState {
     /// Execute a cycle of the lexer state machine.
-    pub const fn execute(
+    pub(crate) const fn execute(
         &self,
         text: &str,
         next_char: Option<SourceChar>,

@@ -1,7 +1,15 @@
 use core::fmt;
-use core::fmt::Write as _;
+use prox_lexer::span::Span;
 use prox_lexer::token::Token;
 use prox_lexer::{Lexer, SourceLookup};
+
+#[derive(Debug, Clone, Copy)]
+pub struct SpannedTree {
+    /// The type of tree.
+    pub tag: TreeKind,
+    /// The span of the tree in text.
+    pub span: Span,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum TreeKind {
@@ -9,7 +17,7 @@ pub enum TreeKind {
     ExprAtom,
     /// An expression identifier.
     ExprIdent,
-    /// An expression super method call.
+    /// An expression super method call i.e. `super.method`.
     ExprSuperCall,
     /// An expression group i.e. `(expr)`.
     ExprGroup,
@@ -72,19 +80,26 @@ pub enum TreeKind {
     Error,
 }
 
+/// A parse tree.
 #[derive(Debug)]
 pub struct Tree {
+    /// The type of parse tree.
     pub tag: TreeKind,
+    /// The children of the tree.
     pub children: Vec<Node>,
 }
 
+/// A node in a parse tree.
 #[derive(Debug)]
 pub enum Node {
+    /// A leaf node.
     Token(Token),
+    /// A sub-tree.
     Tree(Tree),
 }
 
 impl Tree {
+    /// Dump the CST.
     pub fn dump(
         &self,
         lookup: &SourceLookup<'_>,
@@ -113,6 +128,7 @@ impl Tree {
 }
 
 impl TreeKind {
+    /// Return the name of the tree type.
     pub const fn name(self) -> &'static str {
         match self {
             Self::ExprAtom => "an expression literal",

@@ -5,14 +5,14 @@ use crate::token::{Token, TokenKind};
 
 /// The state after the seeing digit(s), a dot and then a digit.
 #[derive(Debug)]
-pub struct DecimalState {
+pub(crate) struct DecimalState {
     /// The byte offset of the first digit.
-    pub start: usize,
+    pub(crate) start: usize,
 }
 
 impl DecimalState {
     /// Execute a cycle of the lexer state machine.
-    pub const fn execute(
+    pub(crate) const fn execute(
         &self,
         text: &str,
         next_char: Option<SourceChar>,

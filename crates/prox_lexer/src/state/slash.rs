@@ -5,14 +5,14 @@ use crate::token::{Token, TokenKind};
 
 /// The state after seeing a slash.
 #[derive(Debug)]
-pub struct SlashState {
+pub(crate) struct SlashState {
     /// The byte offset of the slash.
-    pub start: usize,
+    pub(crate) start: usize,
 }
 
 impl SlashState {
     /// Execute a cycle of the lexer state machine.
-    pub const fn execute(
+    pub(crate) const fn execute(
         &self,
         text: &str,
         next_char: Option<SourceChar>,
@@ -66,14 +66,14 @@ impl SlashState {
 
 /// The state after seeing a double slash.
 #[derive(Debug)]
-pub struct CommentState {
+pub(crate) struct CommentState {
     /// The byte offset of the first `/`.
-    pub start: usize,
+    pub(crate) start: usize,
 }
 
 impl CommentState {
     /// Execute a cycle of the lexer state machine.
-    pub const fn execute(
+    pub(crate) const fn execute(
         &self,
         text: &str,
         next_char: Option<SourceChar>,

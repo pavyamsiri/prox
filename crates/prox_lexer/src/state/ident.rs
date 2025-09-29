@@ -8,37 +8,38 @@ use alloc::collections::BTreeMap;
 use std::sync::LazyLock;
 
 /// The hashmap for keywords
-pub static KEYWORD_HASHMAP: LazyLock<BTreeMap<&'static str, TokenKind>> = LazyLock::new(|| {
-    let mut map = BTreeMap::new();
-    map.insert("and", TokenKind::KeywordAnd);
-    map.insert("class", TokenKind::KeywordClass);
-    map.insert("else", TokenKind::KeywordElse);
-    map.insert("false", TokenKind::KeywordFalse);
-    map.insert("for", TokenKind::KeywordFor);
-    map.insert("fun", TokenKind::KeywordFun);
-    map.insert("if", TokenKind::KeywordIf);
-    map.insert("nil", TokenKind::KeywordNil);
-    map.insert("or", TokenKind::KeywordOr);
-    map.insert("print", TokenKind::KeywordPrint);
-    map.insert("return", TokenKind::KeywordReturn);
-    map.insert("super", TokenKind::KeywordSuper);
-    map.insert("this", TokenKind::KeywordThis);
-    map.insert("true", TokenKind::KeywordTrue);
-    map.insert("var", TokenKind::KeywordVar);
-    map.insert("while", TokenKind::KeywordWhile);
-    map
-});
+pub(crate) static KEYWORD_HASHMAP: LazyLock<BTreeMap<&'static str, TokenKind>> =
+    LazyLock::new(|| {
+        let mut map = BTreeMap::new();
+        map.insert("and", TokenKind::KeywordAnd);
+        map.insert("class", TokenKind::KeywordClass);
+        map.insert("else", TokenKind::KeywordElse);
+        map.insert("false", TokenKind::KeywordFalse);
+        map.insert("for", TokenKind::KeywordFor);
+        map.insert("fun", TokenKind::KeywordFun);
+        map.insert("if", TokenKind::KeywordIf);
+        map.insert("nil", TokenKind::KeywordNil);
+        map.insert("or", TokenKind::KeywordOr);
+        map.insert("print", TokenKind::KeywordPrint);
+        map.insert("return", TokenKind::KeywordReturn);
+        map.insert("super", TokenKind::KeywordSuper);
+        map.insert("this", TokenKind::KeywordThis);
+        map.insert("true", TokenKind::KeywordTrue);
+        map.insert("var", TokenKind::KeywordVar);
+        map.insert("while", TokenKind::KeywordWhile);
+        map
+    });
 
 /// The state after seeing the first character of an identifier.
 #[derive(Debug)]
-pub struct IdentState {
+pub(crate) struct IdentState {
     /// The byte offset of the beginning of an identifier.
     pub start: usize,
 }
 
 impl IdentState {
     /// Execute a cycle of the lexer state machine.
-    pub fn execute(
+    pub(crate) fn execute(
         &self,
         text: &str,
         next_char: Option<SourceChar>,

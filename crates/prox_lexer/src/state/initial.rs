@@ -11,14 +11,14 @@ use crate::token::{Token, TokenKind};
 
 /// The start state of the lexer state machine.
 #[derive(Debug)]
-pub struct InitialState {
+pub(crate) struct InitialState {
     /// The current byte offset.
-    pub start: usize,
+    pub(crate) start: usize,
 }
 
 impl InitialState {
     /// Execute a cycle of the lexer state machine.
-    pub fn execute(
+    pub(crate) fn execute(
         &self,
         text: &str,
         next_char: Option<SourceChar>,

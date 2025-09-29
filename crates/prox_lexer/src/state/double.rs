@@ -5,27 +5,27 @@ use crate::token::{Token, TokenKind};
 
 /// Information to lex a double character token.
 #[derive(Debug)]
-pub struct DoubleCharacterSpec {
+pub(crate) struct DoubleCharacterSpec {
     /// The second character of the double character token.
-    pub second: char,
+    pub(crate) second: char,
     /// The token corresponding to the first character.
-    pub single: TokenKind,
+    pub(crate) single: TokenKind,
     /// The double character token.
-    pub double: TokenKind,
+    pub(crate) double: TokenKind,
 }
 
 /// The state after seeing the first character of a double character token.
 #[derive(Debug)]
-pub struct DoubleCharacterState {
+pub(crate) struct DoubleCharacterState {
     /// The byte offset of the first character.
-    pub start: usize,
+    pub(crate) start: usize,
     /// The information to lex a double character token.
-    pub spec: DoubleCharacterSpec,
+    pub(crate) spec: DoubleCharacterSpec,
 }
 
 impl DoubleCharacterState {
     /// Execute a cycle of the lexer state machine.
-    pub const fn execute(
+    pub(crate) const fn execute(
         &self,
         text: &str,
         next_char: Option<SourceChar>,

@@ -7,14 +7,14 @@ use crate::{
 
 /// The state after seeing a whitespace.
 #[derive(Debug)]
-pub struct WhitespaceState {
+pub(crate) struct WhitespaceState {
     /// The byte offset of the first whitespace character.
-    pub start: usize,
+    pub(crate) start: usize,
 }
 
 impl WhitespaceState {
     /// Execute a cycle of the lexer state machine.
-    pub const fn execute(
+    pub(crate) const fn execute(
         &self,
         text: &str,
         next_char: Option<SourceChar>,

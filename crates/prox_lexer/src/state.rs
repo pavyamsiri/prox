@@ -16,17 +16,17 @@ use numeric::{DecimalState, IntegerState, PeriodState};
 use slash::{CommentState, SlashState};
 
 /// Represents a state transition in the lexer.
-pub struct LexerTransition<S, T> {
+pub(crate) struct LexerTransition<S, T> {
     /// The new state to transition to unless it is `None` then no state change will take place.
-    pub new_state: Option<S>,
+    pub(crate) new_state: Option<S>,
     /// A token or an error if it is lexed.
-    pub token: Option<T>,
+    pub(crate) token: Option<T>,
     /// The characters to put back.
-    pub put_back: LexerPutBack,
+    pub(crate) put_back: LexerPutBack,
 }
 
 /// The characters to put back into the lexer in cases where the state machine needs to backtrack.
-pub enum LexerPutBack {
+pub(crate) enum LexerPutBack {
     /// No characters to put back.
     None,
     /// One character to put back.
@@ -37,7 +37,7 @@ pub enum LexerPutBack {
 
 impl LexerPutBack {
     /// Return a slice of characters.
-    pub const fn to_chars(&self) -> &[SourceChar] {
+    pub(crate) const fn to_chars(&self) -> &[SourceChar] {
         match *self {
             Self::None => &[],
             Self::One(ref chars) => chars,
@@ -48,7 +48,7 @@ impl LexerPutBack {
 
 /// The state of the lexer.
 #[derive(Debug)]
-pub enum State {
+pub(crate) enum State {
     /// The state while parsing single-character tokens.
     Initial(InitialState),
     /// The state when lexing identifiers or keywords.

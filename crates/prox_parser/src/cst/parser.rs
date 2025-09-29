@@ -1,233 +1,95 @@
+mod sets;
+
 use crate::cst::operator::{
     assignment_infix_binding_power, infix_binding_power, postfix_binding_power,
     prefix_binding_power, short_circuit_infix_binding_power,
 };
-use crate::cst::tree::{Node, Tree, TreeKind};
+use crate::cst::tree::{Node, SpannedTree, Tree, TreeKind};
 use core::cell;
-use core::fmt;
 use prox_lexer::{
     Lexer, SourceLookup,
     span::Span,
     token::{Token, TokenKind},
 };
+use sets::{
+    BINARY_OP_ONLY, DECL_FIRST, EXPR_FIRST, STMT_FIRST, STMT_RECOVERY, expr_first, stmt_first,
+};
 
-/// The only valid first tokens of an expression.
-const EXPR_FIRST: &[TokenKind] = &[
-    // Atoms
-    TokenKind::NumericLiteral,
-    TokenKind::KeywordTrue,
-    TokenKind::KeywordFalse,
-    TokenKind::KeywordNil,
-    TokenKind::Ident,
-    TokenKind::StringLiteral,
-    TokenKind::KeywordThis,
-    TokenKind::KeywordSuper,
-    // Groupings
-    TokenKind::LeftParenthesis,
-    // Unary operators
-    TokenKind::Bang,
-    TokenKind::Minus,
-];
-
-/// The tokens which can only be binary ops.
-const BINARY_OP_ONLY: &[TokenKind] = &[
-    TokenKind::Plus,
-    TokenKind::Star,
-    TokenKind::Slash,
-    TokenKind::KeywordAnd,
-    TokenKind::KeywordOr,
-    TokenKind::LessThan,
-    TokenKind::LessThanEqual,
-    TokenKind::GreaterThan,
-    TokenKind::GreaterThanEqual,
-];
-
-/// The only valid first tokens of a statement.
-const STMT_FIRST: &[TokenKind] = &[
-    // For
-    TokenKind::KeywordFor,
-    // If
-    TokenKind::KeywordIf,
-    // Print
-    TokenKind::KeywordPrint,
-    // Return
-    TokenKind::KeywordReturn,
-    // While
-    TokenKind::KeywordWhile,
-    // Block
-    TokenKind::LeftBrace,
-    // Atoms
-    TokenKind::NumericLiteral,
-    TokenKind::KeywordTrue,
-    TokenKind::KeywordFalse,
-    TokenKind::KeywordNil,
-    TokenKind::Ident,
-    TokenKind::StringLiteral,
-    TokenKind::KeywordThis,
-    TokenKind::KeywordSuper,
-    // Groupings
-    TokenKind::LeftParenthesis,
-    // Unary operators
-    TokenKind::Bang,
-    TokenKind::Minus,
-];
-
-/// The only valid first tokens of a declaration.
-const DECL_FIRST: &[TokenKind] = &[
-    // Var
-    TokenKind::KeywordVar,
-    // Class
-    TokenKind::KeywordClass,
-    // Fun
-    TokenKind::KeywordFun,
-    // For
-    TokenKind::KeywordFor,
-    // If
-    TokenKind::KeywordIf,
-    // Print
-    TokenKind::KeywordPrint,
-    // Return
-    TokenKind::KeywordReturn,
-    // While
-    TokenKind::KeywordWhile,
-    // Block
-    TokenKind::LeftBrace,
-    // Atoms
-    TokenKind::NumericLiteral,
-    TokenKind::KeywordTrue,
-    TokenKind::KeywordFalse,
-    TokenKind::KeywordNil,
-    TokenKind::Ident,
-    TokenKind::StringLiteral,
-    TokenKind::KeywordThis,
-    TokenKind::KeywordSuper,
-    // Groupings
-    TokenKind::LeftParenthesis,
-    // Unary operators
-    TokenKind::Bang,
-    TokenKind::Minus,
-];
-
-/// All valid first tokens of an expression as a pattern.
-macro_rules! expr_first {
-    () => {
-        // Atoms
-        prox_lexer::token::TokenKind::NumericLiteral
-            | prox_lexer::token::TokenKind::KeywordTrue
-            | prox_lexer::token::TokenKind::KeywordFalse
-            | prox_lexer::token::TokenKind::KeywordNil
-            | prox_lexer::token::TokenKind::Ident
-            | prox_lexer::token::TokenKind::StringLiteral
-            | prox_lexer::token::TokenKind::KeywordThis
-            | prox_lexer::token::TokenKind::KeywordSuper
-            // Groupings
-            | prox_lexer::token::TokenKind::LeftParenthesis
-            // Unary operators
-            | prox_lexer::token::TokenKind::Bang
-            | prox_lexer::token::TokenKind::Minus
-    };
-}
-
-/// All valid first tokens of a statement as a pattern.
-macro_rules! stmt_first {
-    () => {
-        prox_lexer::token::TokenKind::KeywordFor
-            | prox_lexer::token::TokenKind::KeywordIf
-            | prox_lexer::token::TokenKind::KeywordPrint
-            | prox_lexer::token::TokenKind::KeywordReturn
-            | prox_lexer::token::TokenKind::KeywordWhile
-            | prox_lexer::token::TokenKind::LeftBrace
-            | prox_lexer::token::TokenKind::NumericLiteral
-            | prox_lexer::token::TokenKind::KeywordTrue
-            | prox_lexer::token::TokenKind::KeywordFalse
-            | prox_lexer::token::TokenKind::KeywordNil
-            | prox_lexer::token::TokenKind::Ident
-            | prox_lexer::token::TokenKind::StringLiteral
-            | prox_lexer::token::TokenKind::KeywordThis
-            | prox_lexer::token::TokenKind::KeywordSuper
-            | prox_lexer::token::TokenKind::LeftParenthesis
-            | prox_lexer::token::TokenKind::Bang
-            | prox_lexer::token::TokenKind::Minus
-    };
-}
-
-/// The recovery set for statements.
-const STMT_RECOVERY: &[TokenKind] = &[
-    // Declarations
-    TokenKind::KeywordClass,
-    TokenKind::KeywordVar,
-    TokenKind::KeywordFun,
-];
-
+/// An error encountered when parsing.
 #[derive(Debug)]
 pub enum ParseError {
+    /// The parser expected a token but got another token instead.
     Expected {
+        /// The actual token.
         actual: Token,
+        /// The expected token.
         expected: String,
+        /// The parsing context at the time.
         context: String,
     },
-    Custom(String),
-    Multispan(Vec<(Span, String)>),
+    /// Attempted to assign to an invalid l-value.
     InvalidAssignment {
-        lvalue: (Span, TreeKind),
-        op: Span,
-        value: (Span, TreeKind),
+        /// The invalid l-value.
+        lvalue: SpannedTree,
+        /// The value being assigned.
+        value: SpannedTree,
+    },
+    /// Missing dot after `super`.
+    MissingDotAfterSuper {
+        /// The super token.
+        super_token: Token,
+        /// The non-dot token.
+        actual: Token,
+    },
+    /// Missing method name after `super.`.
+    MissingSuperMethod {
+        /// The super token.
+        super_token: Token,
+        /// The non-method name token.
+        actual: Token,
+    },
+    /// Too many arguments.
+    TooManyArguments {
+        /// The `(` token.
+        list_start: Token,
+        /// The `)` token.
+        list_end: Token,
+    },
+    /// Too many parameters.
+    TooManyParameters {
+        /// The `(` token.
+        list_start: Token,
+        /// The `)` token.
+        list_end: Token,
+    },
+    /// Missing a comma while parsing an argument or parameter list.
+    MissingComma {
+        /// The parse context.
+        context: &'static str,
+        /// The non-comma token.
+        actual: Token,
+    },
+    /// When inheriting from a super class, the class name is invalid.
+    InvalidSuperclass {
+        /// The class declaration.
+        class_decl: Span,
+        /// The actual tree that isn't the super class name.
+        actual: SpannedTree,
     },
 }
 
-impl fmt::Display for ParseError {
-    #[expect(
-        clippy::min_ident_chars,
-        reason = "keep consistent with trait definition."
-    )]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::Expected {
-                actual,
-                ref expected,
-                ref context,
-            } => {
-                write!(
-                    f,
-                    "expected {expected}, found {:?} while parsing {context}",
-                    actual.tag
-                )
-            }
-            Self::Custom(ref msg) => {
-                write!(f, "{msg}")
-            }
-            Self::Multispan(ref items) => {
-                write!(f, "{items:?}")
-            }
-            Self::InvalidAssignment { lvalue, value, .. } => {
-                write!(
-                    f,
-                    "assigning {} to an invalid l-value {} is not a valid l-value.",
-                    value.1.name(),
-                    lvalue.1.name()
-                )
-            }
-        }
-    }
-}
-
+/// Events emitted during parsing.
 #[derive(Debug)]
 enum Event {
+    /// Open a new syntax tree.
     Open {
+        /// The type of tree being constructed.
         kind: TreeKind,
     },
+    /// Close the currently open tree.
     Close,
+    /// Consume token and add to currently open tree.
     Advance,
-    UnexpectedToken {
-        expected: String,
-        context: String,
-    },
-    InvalidAssignment {
-        lvalue: (Span, TreeKind),
-        op: Span,
-        value: (Span, TreeKind),
-    },
-    MultispanError(Vec<(Span, String)>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -246,6 +108,7 @@ pub struct Parser<'src> {
     current_index: usize,
     fuel: cell::Cell<u32>,
     events: Vec<Event>,
+    errors: Vec<ParseError>,
     stmt_context: Vec<&'static str>,
     expr_context: Vec<&'static str>,
 }
@@ -264,6 +127,7 @@ impl<'src> Parser<'src> {
             source,
             stmt_context: Vec::new(),
             expr_context: Vec::new(),
+            errors: Vec::new(),
         }
     }
 }
@@ -315,20 +179,9 @@ impl Parser<'_> {
         mark
     }
 
-    fn report_error_after(
-        &mut self,
-        old_mark: MarkClosed,
-        lvalue: (Span, TreeKind),
-        op: Span,
-        value: (Span, TreeKind),
-    ) -> MarkClosed {
-        self.events.insert(
-            old_mark.index + 1,
-            Event::InvalidAssignment { lvalue, op, value },
-        );
-        MarkClosed {
-            index: old_mark.index + 1,
-        }
+    /// Report given error.
+    fn report_error(&mut self, error: ParseError) {
+        self.errors.push(error);
     }
 
     fn close(&mut self, mark: MarkOpened, kind: TreeKind) -> MarkClosed {
@@ -367,11 +220,12 @@ impl Parser<'_> {
         )
     }
 
-    fn report_error(&mut self, expected: &'static str) {
+    fn report_error_with_message(&mut self, expected: &'static str) {
         tracing::debug!("\tReporting error {expected:}");
-        self.events.push(Event::UnexpectedToken {
+        self.errors.push(ParseError::Expected {
             expected: expected.to_owned(),
             context: self.current_context_msg(),
+            actual: self.peek_token(0),
         });
     }
 
@@ -380,9 +234,10 @@ impl Parser<'_> {
         let mark = self.open(TreeKind::Error);
 
         // Add error reporting here
-        self.events.push(Event::UnexpectedToken {
+        self.errors.push(ParseError::Expected {
             expected: expected.to_owned(),
             context: msg,
+            actual: self.peek_token(0),
         });
         self.advance();
         self.close(mark, TreeKind::Error);
@@ -433,9 +288,10 @@ impl Parser<'_> {
         }
 
         let msg = self.current_context_msg();
-        self.events.push(Event::UnexpectedToken {
+        self.errors.push(ParseError::Expected {
             expected: kind.name().to_owned(),
             context: msg,
+            actual: self.peek_token(0),
         });
     }
 
@@ -479,10 +335,9 @@ impl Parser<'_> {
 impl<'src> Parser<'src> {
     /// Construct the CST.
     fn build_tree(self) -> (SourceLookup<'src>, Tree, Vec<ParseError>) {
-        let mut tokens = self.tokens.into_iter().peekable();
+        let mut tokens = self.tokens.into_iter();
         let mut events = self.events;
         let mut stack = Vec::new();
-        let mut errors = Vec::new();
 
         // Popping last event to ensure that we have a non-empty stack after loop.
         assert!(
@@ -516,22 +371,6 @@ impl<'src> Parser<'src> {
                         .children
                         .push(Node::Token(token));
                 }
-                Event::UnexpectedToken { context, expected } => {
-                    errors.push(ParseError::Expected {
-                        actual: tokens
-                            .peek()
-                            .copied()
-                            .expect("shouldn't have run out of tokens yet."),
-                        context,
-                        expected,
-                    });
-                }
-                Event::MultispanError(items) => {
-                    errors.push(ParseError::Multispan(items));
-                }
-                Event::InvalidAssignment { lvalue, op, value } => {
-                    errors.push(ParseError::InvalidAssignment { lvalue, op, value });
-                }
             }
         }
 
@@ -556,7 +395,7 @@ impl<'src> Parser<'src> {
             stack
                 .pop()
                 .expect("we just asserted that there was one left in the stack."),
-            errors,
+            self.errors,
         )
     }
 }
@@ -687,10 +526,12 @@ impl Parser<'_> {
             "class decls always begin with `class`."
         );
         let mark = self.open(TreeKind::StmtClassDecl);
+        let class_start = self.peek_token(0);
         self.expect(TokenKind::KeywordClass);
         self.consume_trivia();
 
         // Class name
+        let class_end = self.peek_token(0);
         self.expect(TokenKind::Ident);
         self.consume_trivia();
 
@@ -703,9 +544,17 @@ impl Parser<'_> {
                 self.expect(TokenKind::Ident);
                 self.consume_trivia();
             } else if self.at_any(EXPR_FIRST) {
-                // TODO(pavyamsiri): Dedicated error
-                self.report_error("super class");
-                self.expr();
+                let expr_mark = self
+                    .expr()
+                    .expect("already checked we are at a expression boundary.");
+
+                self.report_error(ParseError::InvalidSuperclass {
+                    class_decl: class_start.span.merge(class_end.span),
+                    actual: SpannedTree {
+                        tag: self.get_tree_kind(mark.index).expect("valid open mark."),
+                        span: self.get_span_between(expr_mark, None),
+                    },
+                });
                 self.consume_trivia();
             }
         }
@@ -757,7 +606,7 @@ impl Parser<'_> {
         if self.at(TokenKind::LeftBrace) {
             self.stmt_block();
         } else {
-            self.report_error("function body block");
+            self.report_error_with_message("function body block");
         }
     }
 
@@ -776,6 +625,7 @@ impl Parser<'_> {
 
         let mark = self.open(TreeKind::ParamList);
 
+        let list_start = self.peek_token(0);
         self.expect(TokenKind::LeftParenthesis);
         self.consume_trivia();
 
@@ -796,10 +646,15 @@ impl Parser<'_> {
             }
             self.consume_trivia();
         }
-        // TODO(pavyamsiri): Add a proper dedicated error type.
+
         if param_count > 255 {
-            self.report_error("too many parameters");
+            let list_end = self.peek_token(0);
+            self.report_error(ParseError::TooManyParameters {
+                list_start,
+                list_end,
+            });
         }
+
         // Closing parenthesis
         self.expect(TokenKind::RightParenthesis);
         self.close(mark, TreeKind::ParamList);
@@ -819,6 +674,7 @@ impl Parser<'_> {
         let mark = self.open(TreeKind::Param);
 
         self.expect(TokenKind::Ident);
+        let actual = self.peek_token(0);
         self.consume_trivia();
 
         // At closing parenthesis or comma
@@ -826,8 +682,10 @@ impl Parser<'_> {
             self.expect(TokenKind::Comma);
         } else if self.at(TokenKind::RightParenthesis) {
         } else if self.at(TokenKind::Ident) {
-            // TODO(pavyamsiri): Add custom missing comma error.
-            self.report_error("missing a comma?");
+            self.report_error(ParseError::MissingComma {
+                context: "parameter",
+                actual,
+            });
             self.param();
             self.consume_trivia();
         }
@@ -887,7 +745,7 @@ impl Parser<'_> {
         if self.at_any(STMT_FIRST) {
             self.stmt();
         } else if self.at_any(DECL_FIRST) {
-            self.report_error("statement");
+            self.report_error_with_message("statement");
             self.decl();
         }
 
@@ -924,13 +782,13 @@ impl Parser<'_> {
             }
             expr_first!() => self.stmt_expr(),
             TokenKind::LeftBrace => {
-                self.report_error("for initializer");
+                self.report_error_with_message("for initializer");
                 self.stmt_block();
                 self.consume_trivia();
                 self.expect(TokenKind::Semicolon);
             }
             token if STMT_FIRST.contains(&token) => {
-                self.report_error("for initializer");
+                self.report_error_with_message("for initializer");
                 self.stmt();
             }
             _ => {}
@@ -943,12 +801,12 @@ impl Parser<'_> {
             self.consume_trivia();
             self.expect(TokenKind::Semicolon);
         } else if self.at(TokenKind::LeftBrace) {
-            self.report_error("for condition");
+            self.report_error_with_message("for condition");
             self.stmt_block();
             self.consume_trivia();
             self.expect(TokenKind::Semicolon);
         } else if self.at_any(DECL_FIRST) {
-            self.report_error("for condition");
+            self.report_error_with_message("for condition");
             self.decl();
         } else if self.at(TokenKind::Semicolon) {
             self.expect(TokenKind::Semicolon);
@@ -960,7 +818,7 @@ impl Parser<'_> {
             self.expr();
             self.consume_trivia();
         } else if self.at_any(DECL_FIRST) {
-            self.report_error("for increment");
+            self.report_error_with_message("for increment");
             self.decl();
         }
         self.expect(TokenKind::RightParenthesis);
@@ -970,7 +828,7 @@ impl Parser<'_> {
         if self.at_any(STMT_FIRST) {
             self.stmt();
         } else {
-            self.report_error("for body");
+            self.report_error_with_message("for body");
         }
         self.pop_stmt_context();
         self.close(mark, TreeKind::StmtFor);
@@ -1073,7 +931,7 @@ impl Parser<'_> {
         if self.at_any(EXPR_FIRST) {
             self.expr();
         } else {
-            self.report_error("expression");
+            self.report_error_with_message("expression");
         }
         self.consume_trivia();
 
@@ -1103,11 +961,12 @@ impl Parser<'_> {
     /// ...
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
-    fn expr(&mut self) {
+    fn expr(&mut self) -> Option<MarkClosed> {
         tracing::debug!("EXPR");
         self.push_stmt_context("expression");
-        self.expr_recursive(0);
+        let mark = self.expr_recursive(0);
         self.pop_stmt_context();
+        mark
     }
 
     /// Parses an expression using the Pratt parsing algorithm.
@@ -1240,15 +1099,18 @@ impl Parser<'_> {
             }
         ) {
             let lvalue = self.get_span_between(inner_lhs, Some(op));
-            let op_span = self.get_span_between(op, rhs);
             let value_span = self.get_span_between(rhs.unwrap(), None);
             let lhs_kind = self.get_tree_kind(mark.index + 1).unwrap();
-            let _ = self.report_error_after(
-                lhs,
-                (lvalue, lhs_kind),
-                op_span,
-                (value_span, self.get_tree_kind(rhs.unwrap().index).unwrap()),
-            );
+            self.report_error(ParseError::InvalidAssignment {
+                lvalue: SpannedTree {
+                    tag: lhs_kind,
+                    span: lvalue,
+                },
+                value: SpannedTree {
+                    tag: self.get_tree_kind(rhs.unwrap().index).unwrap(),
+                    span: value_span,
+                },
+            });
         }
         new_lhs
     }
@@ -1284,6 +1146,7 @@ impl Parser<'_> {
                 self.push_expr_context("super");
                 let mark = self.open(TreeKind::ExprIdent);
 
+                let super_token = self.peek_token(0);
                 self.expect(TokenKind::KeywordSuper);
                 self.consume_trivia();
 
@@ -1292,18 +1155,22 @@ impl Parser<'_> {
                     self.expect(TokenKind::Dot);
                     self.consume_trivia();
                 } else {
-                    // TODO(pavyamsiri): Dedicated error
-                    self.report_error("dot");
+                    let actual = self.peek_token(0);
+                    self.report_error(ParseError::MissingDotAfterSuper {
+                        super_token,
+                        actual,
+                    });
                     failed = true;
                 }
 
                 if self.at(TokenKind::Ident) {
                     self.expect(TokenKind::Ident);
-                } else {
-                    // TODO(pavyamsiri): Dedicated error
-                    if !failed {
-                        self.report_error("method name");
-                    }
+                } else if !failed {
+                    let actual = self.peek_token(0);
+                    self.report_error(ParseError::MissingSuperMethod {
+                        super_token,
+                        actual,
+                    });
                 }
 
                 self.pop_expr_context();
@@ -1358,6 +1225,7 @@ impl Parser<'_> {
             "argument lists always begin with `(`."
         );
         let mark = self.open(TreeKind::ArgList);
+        let list_start = self.peek_token(0);
         self.expect(TokenKind::LeftParenthesis);
         self.consume_trivia();
 
@@ -1371,9 +1239,12 @@ impl Parser<'_> {
             }
             arg_count += 1;
         }
-        // TODO(pavyamsiri): Add a proper dedicated error type.
+        let list_end = self.peek_token(0);
         if arg_count > 255 {
-            self.report_error("too many arguments");
+            self.report_error(ParseError::TooManyArguments {
+                list_start,
+                list_end,
+            });
         }
 
         self.expect(TokenKind::RightParenthesis);
@@ -1390,13 +1261,19 @@ impl Parser<'_> {
         let mark = self.open(TreeKind::Arg);
 
         self.expr();
+        let actual = self.peek_token(0);
         self.consume_trivia();
 
-        if self.at(TokenKind::RightParenthesis) {
-        } else if self.at(TokenKind::Comma) {
+        if self.at(TokenKind::Comma) {
             self.expect(TokenKind::Comma);
-        } else {
-            self.advance_with_error("comma");
+        } else if self.at(TokenKind::RightParenthesis) {
+        } else if self.at(TokenKind::Ident) {
+            self.report_error(ParseError::MissingComma {
+                context: "argument",
+                actual,
+            });
+            self.param();
+            self.consume_trivia();
         }
         self.close(mark, TreeKind::Arg);
     }
@@ -1434,7 +1311,7 @@ impl Parser<'_> {
             self.stmt();
             self.consume_trivia();
         } else if self.at_any(STMT_RECOVERY) {
-            self.report_error("statement");
+            self.report_error_with_message("statement");
         }
         self.consume_trivia();
 
@@ -1447,7 +1324,7 @@ impl Parser<'_> {
                 self.stmt();
                 self.consume_trivia();
             } else if self.at_any(STMT_RECOVERY) {
-                self.report_error("statement");
+                self.report_error_with_message("statement");
             }
         }
 

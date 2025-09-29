@@ -2,6 +2,6 @@ mod decimal;
 mod integer;
 mod period;
 
-pub use decimal::DecimalState;
-pub use integer::IntegerState;
-pub use period::PeriodState;
+pub(crate) use decimal::DecimalState;
+pub(crate) use integer::IntegerState;
+pub(crate) use period::PeriodState;

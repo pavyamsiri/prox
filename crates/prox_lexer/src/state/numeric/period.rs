@@ -6,16 +6,16 @@ use crate::token::{Token, TokenKind};
 
 /// The state after seeing digit(s) and then a dot.
 #[derive(Debug)]
-pub struct PeriodState {
+pub(crate) struct PeriodState {
     /// The byte offset of the first digit.
-    pub start: usize,
+    pub(crate) start: usize,
     /// The dot and its offset.
-    pub period: SourceChar,
+    pub(crate) period: SourceChar,
 }
 
 impl PeriodState {
     /// Execute a cycle of the lexer state machine.
-    pub const fn execute(
+    pub(crate) const fn execute(
         &self,
         text: &str,
         next_char: Option<SourceChar>,

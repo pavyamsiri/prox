@@ -131,7 +131,8 @@ pub enum Node {
 
 impl Node {
     /// Return the underlying token if the node is a token.
-    pub fn token(&self) -> Option<&Token> {
+    #[must_use]
+    pub const fn token(&self) -> Option<&Token> {
         match *self {
             Node::Token(ref token) => Some(token),
             Node::Tree(_) => None,
@@ -139,7 +140,8 @@ impl Node {
     }
 
     /// Return the underlying tree if the node is a tree.
-    pub fn tree(&self) -> Option<&Cst> {
+    #[must_use]
+    pub const fn tree(&self) -> Option<&Cst> {
         match *self {
             Node::Token(_) => None,
             Node::Tree(ref tree) => Some(tree),

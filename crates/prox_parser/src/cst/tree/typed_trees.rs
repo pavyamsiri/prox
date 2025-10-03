@@ -35,10 +35,22 @@ pub enum BinaryOp {
 }
 
 pub trait CstNode<'node> {
+    /// Cast a node to a typed node if possible.
     fn ref_cast(node: &'node Cst) -> Option<Self>
     where
         Self: Sized;
+    /// Return a iterator over the non-trivial tokens.
     fn non_trivia_tokens(&self) -> impl Iterator<Item = &Token>;
+    /// The expected tree type.
+    fn expected_type() -> TreeKind;
+}
+
+/// Interface for binary expression nodes.
+pub trait BinaryNode<'tree> {
+    /// Return the binary expression's operator.
+    fn op(&self) -> BinaryOp;
+    /// Return the binary expression's operands.
+    fn operands(&self) -> Option<(Expr<'tree>, Expr<'tree>)>;
 }
 
 macro_rules! generate_token_cast {
@@ -61,17 +73,21 @@ macro_rules! generate_token_cast {
 }
 
 macro_rules! generate_node_ref_cast {
-    ($name:ident, $tag:pat) => {
+    ($name:ident, $tag:expr) => {
         #[derive(Debug)]
         pub struct $name<'node>(&'node Cst);
 
         impl<'node> CstNode<'node> for $name<'node> {
             fn ref_cast(node: &'node Cst) -> Option<Self> {
-                matches!(node.tag, $tag).then_some(Self(node))
+                (node.tag == $tag).then_some(Self(node))
             }
 
             fn non_trivia_tokens(&self) -> impl Iterator<Item = &Token> {
                 self.0.children.iter().filter_map(|child| child.token())
+            }
+
+            fn expected_type() -> TreeKind {
+                $tag
             }
         }
     };
@@ -122,12 +138,12 @@ macro_rules! generate_get_span {
 
 macro_rules! generate_binary_expr_helpers {
     ($name:ident, $tok:pat, $op:expr) => {
-        impl<'tree> $name<'tree> {
-            pub const fn op(&self) -> BinaryOp {
+        impl<'tree> BinaryNode<'tree> for $name<'tree> {
+            fn op(&self) -> BinaryOp {
                 $op
             }
 
-            pub fn operands(&self) -> Option<(Expr<'tree>, Expr<'tree>)> {
+            fn operands(&self) -> Option<(Expr<'tree>, Expr<'tree>)> {
                 let mut lhs: Option<Expr<'tree>> = None;
                 let mut rhs: Option<Expr<'tree>> = None;
 
@@ -372,6 +388,7 @@ impl<'node> Block<'node> {
             .filter_map(DeclarationOrStatement::ref_cast)
     }
 
+    generate_get_token!(right_brace, TokenKind::RightBrace);
     generate_get_span!(TokenKind::LeftBrace, TokenKind::RightBrace);
 }
 
@@ -489,6 +506,7 @@ impl<'tree> ExprCall<'tree> {
     }
 
     /// Return the argument list if it exists.
+    #[must_use]
     pub fn arg_list(&self) -> Option<ArgList<'tree>> {
         self.0
             .children

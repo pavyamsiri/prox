@@ -4,6 +4,7 @@ members = [
     "crates/prox",
     "crates/prox_parser",
     "crates/prox_interner",
+    "crates/prox_walker",
 ]
 resolver = "3"
 

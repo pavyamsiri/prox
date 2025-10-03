@@ -1,4 +1,5 @@
 use core::convert;
+use core::default;
 use core::fmt;
 use core::iter;
 use core::num::NonZeroU32;
@@ -18,11 +19,13 @@ impl NodeIndex {
     }
 
     /// Convert back into a raw index.
+    #[must_use]
     pub const fn raw(self) -> u32 {
         self.0.get()
     }
 
     /// Convert into a `usize`.
+    #[must_use]
     pub const fn as_usize(self) -> usize {
         self.0.get() as usize
     }
@@ -50,7 +53,7 @@ impl ExtraIndex {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct NodeData {
+pub struct NodeData {
     lhs: u32,
     rhs: u32,
     token_or_symbol: u32,
@@ -64,19 +67,42 @@ impl NodeData {
     };
 
     /// Get left node if present
+    #[must_use]
     pub fn left(&self) -> Option<NodeIndex> {
         NodeIndex::new(self.lhs)
     }
 
     /// Get right node if present
+    #[must_use]
     pub fn right(&self) -> Option<NodeIndex> {
         NodeIndex::new(self.rhs)
+    }
+
+    /// Get the stored number assuming this node is a `Number` tag.
+    #[must_use]
+    pub fn number(&self) -> f64 {
+        let lo = u64::from(self.lhs);
+        let hi = u64::from(self.rhs);
+        let bits = (hi << 32) | lo;
+        f64::from_bits(bits)
+    }
+
+    /// Get the symbol.
+    #[must_use]
+    pub fn symbol(&self) -> Symbol {
+        Symbol::from(self.token_or_symbol)
+    }
+
+    /// Get the token or symbol value.
+    #[must_use]
+    pub const fn middle(&self) -> u32 {
+        self.token_or_symbol
     }
 }
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NodeTag {
+pub enum NodeTag {
     /// The topmost level structure.
     /// `lhs` = extra data index.
     /// `rhs` = extra data length.
@@ -372,9 +398,8 @@ impl NodeList {
     }
 }
 
-impl Ast {
-    /// Create a new empty AST
-    pub fn new() -> Self {
+impl default::Default for Ast {
+    fn default() -> Self {
         let mut nodes = NodeList::new();
         let root = nodes.add(NodeTag::Program, NodeData::EMPTY);
         let empty_span = Span {
@@ -386,8 +411,25 @@ impl Ast {
             nodes,
             extra_data: Vec::with_capacity(1024),
             spans: vec![empty_span, empty_span],
-            strings: Interner::with_hasher(hash::DefaultHasher::new()),
+            strings: Interner::with_hasher(hash::RandomState::new()),
             root,
+        }
+    }
+}
+
+impl Ast {
+    /// Create a new empty AST.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a new AST with a pre-existing interner.
+    #[must_use]
+    pub fn with_interner(interner: Interner) -> Self {
+        Self {
+            strings: interner,
+            ..Default::default()
         }
     }
 
@@ -426,25 +468,61 @@ impl Ast {
     }
 
     /// Get the node's span.
-    fn span(&self, index: NodeIndex) -> Span {
+    #[must_use]
+    pub fn span(&self, index: NodeIndex) -> Span {
         self.spans[index.as_usize()]
+    }
+
+    /// Get the root.
+    #[must_use]
+    pub fn root(&self) -> NodeIndex {
+        println!("interner = {:#?}", self.strings);
+        self.root
+    }
+
+    /// Get the node data.
+    #[must_use]
+    pub fn data(&self, index: NodeIndex) -> NodeData {
+        self.nodes.data(index)
+    }
+
+    /// Get the node tag.
+    #[must_use]
+    pub fn tag(&self, index: NodeIndex) -> NodeTag {
+        self.nodes.tag(index)
+    }
+
+    /// Resolve a symbol into a string.
+    #[must_use]
+    pub fn resolve(&self, symbol: Symbol) -> Option<&str> {
+        self.strings.resolve(symbol)
     }
 }
 
+#[derive(Default)]
 pub struct AstBuilder {
     ast: Ast,
 }
 
 impl AstBuilder {
+    #[must_use]
     pub fn new() -> Self {
-        Self { ast: Ast::new() }
+        Self::default()
     }
 
+    /// Create a new builder with a pre-existing interner.
+    #[must_use]
+    pub fn with_interner(interner: Interner) -> Self {
+        Self {
+            ast: Ast::with_interner(interner),
+        }
+    }
+
+    #[must_use]
     pub fn finish(mut self, statements: &[NodeIndex]) -> Ast {
         let (lhs, length) = self
             .ast
             .add_extra_data_iter(statements.iter().map(|stmt| stmt.raw()));
-        println!("length={length}");
         self.ast.nodes.update(
             self.ast.root,
             NodeData {
@@ -577,8 +655,8 @@ impl AstBuilder {
     /// Add number.
     pub fn build_number(&mut self, value: f64, span: Span) -> NodeIndex {
         let bits = value.to_bits().to_le();
-        let hi = (bits & 0xFFFF_FFFF) as u32;
-        let lo = (bits >> 32) as u32;
+        let lo = (bits & 0xFFFF_FFFF) as u32;
+        let hi = (bits >> 32) as u32;
         let data = NodeData {
             lhs: lo,
             rhs: hi,
@@ -614,7 +692,6 @@ impl AstBuilder {
 
     /// Add block.
     pub fn build_block(&mut self, statements: &[NodeIndex], span: Span) -> NodeIndex {
-        println!("Filling block with statements {statements:?}");
         let (lhs, length) = self
             .ast
             .add_extra_data_iter(statements.iter().map(|stmt| stmt.raw()));
@@ -848,11 +925,8 @@ impl Ast {
                 println!("Identifier = {name}");
             }
             NodeTag::Number => {
-                let hi = u64::from(data.lhs);
-                let lo = u64::from(data.rhs);
-                let bits = (hi << 32) | lo;
-                let value = f64::from_bits(bits);
-                println!("Number = {value} or in bits {bits}");
+                let value = data.number();
+                println!("Number = {value}");
             }
             NodeTag::Return => {
                 println!("RETURNING");
@@ -894,7 +968,7 @@ impl Ast {
     }
 }
 
-struct ExtraDataIterator<'data> {
+pub struct ExtraDataIterator<'data> {
     data: &'data [u32],
     start: usize,
     end: usize,
@@ -913,9 +987,41 @@ impl iter::Iterator for ExtraDataIterator<'_> {
 }
 
 impl Ast {
-    fn extra_data(&self, index: NodeIndex) -> ExtraDataIterator<'_> {
+    /// Return the slice over extra data assuming the node has start in `lhs` and length in `rhs`.
+    #[must_use]
+    pub fn extra_data_slice(&self, index: NodeIndex) -> &[u32] {
+        let data = self.data(index);
+        let start = data.lhs as usize;
+        let length = data.rhs as usize;
+        &self.extra_data[start..(start + length)]
+    }
+
+    /// Return a function declaration's extra data. This function does no checking and assumes that the node tag
+    /// is `StmtFnDecl`.
+    #[must_use]
+    pub fn fn_decl_extra(&self, index: NodeIndex) -> (bool, u32, &[u32]) {
+        let extra_data = self.extra_data_slice(index);
+        let is_method = extra_data[0] == 1;
+        let block = extra_data[1];
+        let parameters = &extra_data[2..];
+        (is_method, block, parameters)
+    }
+
+    /// Return an if statement's extra data. This function does no checking and assumes that the node tag
+    /// is `If`.
+    #[must_use]
+    pub fn if_extra(&self, index: NodeIndex) -> Option<u32> {
+        let data = self.data(index);
+        let start = data.lhs as usize;
+        let has_else = self.extra_data[start] == 1;
+        has_else.then(|| self.extra_data[start + 1])
+    }
+
+    #[must_use]
+    pub fn extra_data(&self, index: NodeIndex) -> ExtraDataIterator<'_> {
         let data = self.nodes.data(index);
         let tag = self.nodes.tag(index);
+        println!("Extra data = {:?}", self.extra_data);
 
         match tag {
             NodeTag::Program | NodeTag::StmtFnDecl | NodeTag::Block | NodeTag::Call => {

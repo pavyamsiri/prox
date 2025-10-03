@@ -1,9 +1,10 @@
+use core::hash;
 use core::ops;
 use std::collections::HashMap;
-use std::hash;
+use std::hash::RandomState;
 
 /// A symbol representing an interned string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Symbol(u32);
 
 impl Symbol {
@@ -42,7 +43,7 @@ impl Span {
 type HashedString = u64;
 
 #[derive(Debug, Clone)]
-pub struct Interner<S = hash::DefaultHasher> {
+pub struct Interner<S = RandomState> {
     /// Map from string (after hashing) to a light weight symbol.
     string_to_symbol: HashMap<HashedString, Symbol>,
     /// Map from symbol (as index) to it span over the string buffer.
@@ -50,7 +51,7 @@ pub struct Interner<S = hash::DefaultHasher> {
     /// Buffer storing all interned strings in sequence.
     data: String,
     /// The hasher used to convert strings to a hash to save on memory.
-    hasher: S,
+    hasher_builder: S,
 }
 
 impl<S> Interner<S> {
@@ -60,7 +61,7 @@ impl<S> Interner<S> {
             string_to_symbol: HashMap::new(),
             symbol_to_span: Vec::new(),
             data: String::new(),
-            hasher,
+            hasher_builder: hasher,
         }
     }
 
@@ -72,7 +73,7 @@ impl<S> Interner<S> {
     }
 }
 
-impl<S: hash::Hasher> Interner<S> {
+impl<S: hash::BuildHasher> Interner<S> {
     /// Return a symbol representing the interned string.
     ///
     /// # Panics
@@ -111,8 +112,7 @@ impl<S: hash::Hasher> Interner<S> {
     }
 
     /// Hash a string.
-    fn hash_string(&mut self, text: &str) -> HashedString {
-        self.hasher.write(text.as_bytes());
-        self.hasher.finish()
+    fn hash_string(&self, text: &str) -> HashedString {
+        self.hasher_builder.hash_one(text.as_bytes())
     }
 }

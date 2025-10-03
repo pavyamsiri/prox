@@ -1,7 +1,7 @@
 use core::{cmp, ops};
 
 /// A span over bytes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Span {
     /// The byte index of the start of the span.
     pub start: usize,

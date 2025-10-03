@@ -1,38 +1,53 @@
-use prox_lexer::{SourceCode, span::Span};
-
 use crate::{
     ast::{Ast, AstBuilder, BinaryOp as AstBinaryOp, NodeIndex},
-    cst::{
-        parser::CorrectParse,
-        tree::typed_trees::{
-            BinaryOp as CstBinaryOp, Block, ClassDecl, CstNode as _, Declaration,
-            DeclarationOrStatement, Expr, ExprCall, ExprLt, FnDecl, Ident, If, NumericLiteral,
-            Print, Program, Return, Statement, VarDecl,
+    cst::tree::{
+        Cst,
+        typed_trees::{
+            BinaryNode as _, BinaryOp as CstBinaryOp, Block, ClassDecl, CstNode as _, Declaration,
+            DeclarationOrStatement, Expr, ExprCall, FnDecl, Ident, If, NumericLiteral, Print,
+            Program, Return, Statement, VarDecl,
         },
     },
+    resolver::ResolvedCst,
 };
+use core::default;
+use prox_interner::Interner;
+use prox_lexer::{SourceCode, span::Span};
 
-struct CstToAstConverter {
+pub struct CstToAstConverter {
     builder: AstBuilder,
 }
 
+impl default::Default for CstToAstConverter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CstToAstConverter {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             builder: AstBuilder::new(),
         }
     }
 
-    pub fn convert(mut self, program: &CorrectParse<'_>) -> Option<Ast> {
-        let source = &program.source;
-        let program = Program::ref_cast(&program.root)?;
+    /// Create a new converter with a pre-existing interner.
+    #[must_use]
+    pub fn with_interner(interner: Interner) -> Self {
+        Self {
+            builder: AstBuilder::with_interner(interner),
+        }
+    }
+
+    #[must_use]
+    pub fn convert(mut self, source: &SourceCode<'_>, root: &Cst) -> Option<Ast> {
+        let program = Program::ref_cast(root)?;
         let mut statements = Vec::new();
         for decl_or_stmt in program.declarations_or_statements() {
             let (node, _) = self.convert_declaration_or_statement(source, &decl_or_stmt)?;
             statements.push(node);
         }
-
-        println!("{statements:?}");
 
         Some(self.builder.finish(&statements))
     }
@@ -253,7 +268,6 @@ impl CstToAstConverter {
         let value = lexeme
             .parse::<f64>()
             .expect("numeric literal tokens should always be parseable to f64");
-        println!("Parsing {lexeme:?} so value {value}");
 
         let node = self.builder.build_number(value, span);
         Some((node, span))
@@ -317,10 +331,10 @@ const fn convert_binary_op(op: CstBinaryOp) -> AstBinaryOp {
 }
 
 mod tests {
-    use crate::{cst::parser::Parser, cst_to_ast::CstToAstConverter};
 
     #[test]
     fn create_ast() {
+        use crate::{cst::parser::Parser, cst_to_ast::CstToAstConverter, resolver::Resolver};
         let text = "
 fun fib(n) {
   if (n < 2) return n;
@@ -331,16 +345,15 @@ var start = clock();
 print fib(35) == 9227465;
 print clock() - start;
         ";
-        let cst = Parser::new(text)
-            .parse()
-            .expect("can't handle errors right now.");
+        let cst = Parser::new(text).parse();
+        let resolver = Resolver::default();
+        let resolved_cst = resolver.resolve(cst).expect("resolution failed");
 
-        let converter = CstToAstConverter::new();
+        let converter = CstToAstConverter::with_interner(resolved_cst.interner);
 
         let res = converter
-            .convert(&cst)
+            .convert(&resolved_cst.source, &resolved_cst.root)
             .expect("conversion should be successful");
-        println!("{res:?}");
         res.traverse();
     }
 }

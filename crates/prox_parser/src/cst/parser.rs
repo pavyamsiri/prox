@@ -17,39 +17,9 @@ use sets::{
     BINARY_OP_ONLY, DECL_FIRST, EXPR_FIRST, STMT_FIRST, STMT_RECOVERY, expr_first, stmt_first,
 };
 
-/// The result of the parser.
-type ParseResult<'src> = Result<CorrectParse<'src>, IncorrectParse<'src>>;
-
-/// A result of a correct parse.
+/// A result of a parse.
 #[derive(Debug)]
-pub struct CorrectParse<'src> {
-    /// The program root.
-    pub root: Cst,
-    /// The source code.
-    pub source: SourceCode<'src>,
-}
-
-impl CorrectParse<'_> {
-    /// Dump the CST.
-    ///
-    /// # Panics
-    /// If parsed tree does not correspond to the given the source lookup.
-    ///
-    /// # Errors
-    /// Can error if the given buffer becomes full.
-    pub fn dump(
-        &self,
-        buffer: &mut impl fmt::Write,
-        level: usize,
-        skip_trivia: bool,
-    ) -> Result<(), fmt::Error> {
-        self.root.dump(&self.source, buffer, level, skip_trivia)
-    }
-}
-
-/// A result of an incorrect parse.
-#[derive(Debug)]
-pub struct IncorrectParse<'src> {
+pub struct ParseResult<'src> {
     /// The program root.
     pub root: Cst,
     /// The source code.
@@ -58,7 +28,7 @@ pub struct IncorrectParse<'src> {
     pub errors: Vec<ParseError>,
 }
 
-impl IncorrectParse<'_> {
+impl ParseResult<'_> {
     /// Dump the CST.
     ///
     /// # Panics
@@ -637,17 +607,10 @@ impl<'src> Parser<'src> {
         let root = stack
             .pop()
             .expect("we just asserted that there was one left in the stack.");
-        if self.errors.is_empty() {
-            Ok(CorrectParse {
-                root,
-                source: self.source,
-            })
-        } else {
-            Err(IncorrectParse {
-                root,
-                source: self.source,
-                errors: self.errors,
-            })
+        ParseResult {
+            root,
+            source: self.source,
+            errors: self.errors,
         }
     }
 }
@@ -657,11 +620,7 @@ impl<'src> Parser<'src> {
     ///
     /// # Errors
     /// If the given source code is malformed then the parse will not succeed.
-    #[expect(
-        clippy::result_large_err,
-        reason = "neither the ok and err variants are unlikely."
-    )]
-    pub fn parse(mut self) -> Result<CorrectParse<'src>, IncorrectParse<'src>> {
+    pub fn parse(mut self) -> ParseResult<'src> {
         self.program();
         self.build_tree()
     }

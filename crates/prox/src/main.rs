@@ -4,7 +4,7 @@ use clap::Parser as CLParser;
 use color_eyre::Report;
 use prox_lexer::span::Span;
 use prox_lexer::token::Token;
-use prox_parser::cst::parser::{IncorrectParse, ParseError, Parser};
+use prox_parser::cst::parser::{ParseError, Parser};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -81,22 +81,8 @@ fn parse(text: &str, path: &Path) -> bool {
     let path = &path.to_string_lossy();
 
     let parser = Parser::new(text);
-    let result = parser.parse();
+    let parse_tree = parser.parse();
     let mut buffer = String::new();
-
-    let parse_tree = match result {
-        Ok(tree) => {
-            tree.dump(&mut buffer, 0, true)
-                .expect("can't handle formatting errors.");
-            println!("{buffer}");
-            return true;
-        }
-        Err(tree) => {
-            tree.dump(&mut buffer, 0, true)
-                .expect("can't handle formatting errors.");
-            tree
-        }
-    };
 
     for error in parse_tree.errors {
         match error {

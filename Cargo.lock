@@ -337,6 +337,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "prox_walker"
+version = "0.0.0"
+dependencies = [
+ "prox_interner",
+ "prox_parser",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"

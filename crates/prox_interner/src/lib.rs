@@ -1,3 +1,4 @@
+use core::fmt;
 use core::hash;
 use core::ops;
 use std::collections::HashMap;
@@ -37,6 +38,12 @@ impl Span {
         let start = self.start as usize;
         let length = self.length as usize;
         start..(start + length)
+    }
+
+    /// Return the end index.
+    #[must_use]
+    const fn end(self) -> u32 {
+        self.start + self.length
     }
 }
 
@@ -114,5 +121,39 @@ impl<S: hash::BuildHasher> Interner<S> {
     /// Hash a string.
     fn hash_string(&self, text: &str) -> HashedString {
         self.hasher_builder.hash_one(text.as_bytes())
+    }
+}
+
+impl fmt::Display for Interner {
+    #[expect(
+        clippy::min_ident_chars,
+        reason = "keep consistent with trait definition."
+    )]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let indent = " ".repeat(4);
+        writeln!(f, "Interner {{")?;
+        writeln!(f, "{indent}symbol_to_span: [")?;
+        for (sym, span) in self.symbol_to_span.iter().enumerate() {
+            let lexeme = self
+                .resolve(Symbol(sym.try_into().map_err(|_err| fmt::Error)?))
+                .ok_or(fmt::Error)?;
+            writeln!(
+                f,
+                "{indent}{indent}{sym} -> {}..{} -> {lexeme},",
+                span.start,
+                span.end()
+            )?;
+        }
+        writeln!(f, "{indent}],")?;
+        writeln!(f, "{indent}data = {:?},", self.data)?;
+        write!(f, "{indent}       ^")?;
+        for index in 0..self.data.chars().count() {
+            write!(f, "{}", index % 10)?;
+        }
+        writeln!(f, "^")?;
+
+        writeln!(f, "}}")?;
+
+        Ok(())
     }
 }

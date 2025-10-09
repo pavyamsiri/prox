@@ -4,6 +4,16 @@ use prox_lexer::{
     token::{Token, TokenKind},
 };
 
+/// Unary operations.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    /// Boolean not.
+    Not,
+    /// Numeric negation.
+    Neg,
+}
+
 /// Binary operations.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +53,18 @@ pub trait CstNode<'node> {
     fn non_trivia_tokens(&self) -> impl Iterator<Item = &Token>;
     /// The expected tree type.
     fn expected_type() -> TreeKind;
+    /// The tree type name.
+    fn type_name(&self) -> &'static str;
+}
+
+/// Interface for binary expression nodes.
+pub trait UnaryNode<'tree> {
+    /// Return the unary expression's operator.
+    fn op(&self) -> UnaryOp;
+    /// Return the token of the operator.
+    fn op_token(&self) -> Option<&Span>;
+    /// Return the unary expression's operand.
+    fn operand(&self) -> Option<Expr<'tree>>;
 }
 
 /// Interface for binary expression nodes.
@@ -55,18 +77,35 @@ pub trait BinaryNode<'tree> {
 
 macro_rules! generate_token_cast {
     ($name:ident, $tag:pat) => {
-        #[derive(Debug)]
+        #[derive(Debug, Clone, Copy)]
         pub struct $name(Span);
 
         impl $name {
             #[must_use]
-            pub fn ref_cast(token: &Token) -> Option<Self> {
+            pub fn token_cast(token: &Token) -> Option<Self> {
                 matches!(token.tag, $tag).then_some(Self(token.span))
             }
 
             #[must_use]
             pub const fn span(&self) -> &Span {
                 &self.0
+            }
+        }
+    };
+    ($name:ident, $tag:pat, $tree_tag:pat) => {
+        generate_token_cast!($name, $tag);
+
+        impl $name {
+            #[must_use]
+            pub fn ref_cast(node: &Cst) -> Option<Self> {
+                matches!(node.tag, $tree_tag)
+                    .then(|| {
+                        node.children
+                            .iter()
+                            .filter_map(|node| node.token())
+                            .find_map(|tok| Self::token_cast(tok))
+                    })
+                    .flatten()
             }
         }
     };
@@ -88,6 +127,10 @@ macro_rules! generate_node_ref_cast {
 
             fn expected_type() -> TreeKind {
                 $tag
+            }
+
+            fn type_name(&self) -> &'static str {
+                stringify!($name)
             }
         }
     };
@@ -176,6 +219,32 @@ macro_rules! generate_binary_expr_helpers {
     };
 }
 
+macro_rules! generate_unary_expr_helpers {
+    ($name:ident, $tok:pat, $op:expr) => {
+        impl<'tree> UnaryNode<'tree> for $name<'tree> {
+            fn op(&self) -> UnaryOp {
+                $op
+            }
+
+            fn op_token(&self) -> Option<&Span> {
+                self.0.children.iter().find_map(|child| {
+                    child
+                        .token()
+                        .and_then(|tok| matches!(tok.tag, $tok).then_some(&tok.span))
+                })
+            }
+
+            fn operand(&self) -> Option<Expr<'tree>> {
+                self.0
+                    .children
+                    .iter()
+                    .filter_map(|child| child.tree())
+                    .find_map(Expr::ref_cast)
+            }
+        }
+    };
+}
+
 generate_node_ref_cast!(Program, TreeKind::Program);
 
 // Declarations
@@ -215,6 +284,15 @@ generate_node_ref_cast!(ExprEq, TreeKind::ExprBinaryEqualEqual);
 generate_node_ref_cast!(ExprNe, TreeKind::ExprBinaryBangEqual);
 generate_node_ref_cast!(ExprAnd, TreeKind::ExprBinaryAnd);
 generate_node_ref_cast!(ExprOr, TreeKind::ExprBinaryOr);
+// Unary
+generate_node_ref_cast!(ExprNot, TreeKind::ExprUnaryBang);
+generate_node_ref_cast!(ExprNeg, TreeKind::ExprUnaryMinus);
+// Misc
+generate_node_ref_cast!(ExprGet, TreeKind::ExprGet);
+generate_node_ref_cast!(ExprSet, TreeKind::ExprSet);
+generate_node_ref_cast!(ExprAssignment, TreeKind::ExprBinaryAssignment);
+generate_node_ref_cast!(ExprSuperMethod, TreeKind::ExprSuperMethod);
+generate_node_ref_cast!(ExprGroup, TreeKind::ExprGroup);
 
 generate_binary_expr_helpers!(ExprMul, TokenKind::Star, BinaryOp::Mul);
 generate_binary_expr_helpers!(ExprDiv, TokenKind::Slash, BinaryOp::Div);
@@ -229,12 +307,27 @@ generate_binary_expr_helpers!(ExprNe, TokenKind::BangEqual, BinaryOp::Ne);
 generate_binary_expr_helpers!(ExprAnd, TokenKind::KeywordAnd, BinaryOp::And);
 generate_binary_expr_helpers!(ExprOr, TokenKind::KeywordOr, BinaryOp::Or);
 
+generate_unary_expr_helpers!(ExprNot, TokenKind::Bang, UnaryOp::Not);
+generate_unary_expr_helpers!(ExprNeg, TokenKind::Minus, UnaryOp::Neg);
+
 generate_node_ref_cast!(ExprCall, TreeKind::ExprCall);
 
 // Tokens
-generate_token_cast!(Ident, TokenKind::Ident);
-generate_token_cast!(NumericLiteral, TokenKind::NumericLiteral);
-generate_token_cast!(StringLiteral, TokenKind::StringLiteral);
+generate_token_cast!(Nil, TokenKind::KeywordNil, TreeKind::ExprNil);
+generate_token_cast!(True, TokenKind::KeywordTrue, TreeKind::ExprTrue);
+generate_token_cast!(False, TokenKind::KeywordFalse, TreeKind::ExprFalse);
+generate_token_cast!(Ident, TokenKind::Ident, TreeKind::ExprIdent);
+generate_token_cast!(
+    NumericLiteral,
+    TokenKind::NumericLiteral,
+    TreeKind::ExprNumericLiteral
+);
+generate_token_cast!(
+    StringLiteral,
+    TokenKind::StringLiteral,
+    TreeKind::ExprStringLiteral
+);
+generate_token_cast!(ExprThis, TokenKind::KeywordThis, TreeKind::ExprThis);
 
 impl<'tree> Program<'tree> {
     pub fn declarations_or_statements(self) -> impl Iterator<Item = DeclarationOrStatement<'tree>> {
@@ -310,6 +403,23 @@ pub enum DeclarationOrStatement<'tree> {
 }
 
 impl<'node> DeclarationOrStatement<'node> {
+    /// Return the type name.
+    #[must_use]
+    pub fn type_name(&self) -> &'static str {
+        match *self {
+            DeclarationOrStatement::Var(ref decl) => decl.type_name(),
+            DeclarationOrStatement::Class(ref decl) => decl.type_name(),
+            DeclarationOrStatement::Fn(ref decl) => decl.type_name(),
+            DeclarationOrStatement::If(ref stmt) => stmt.type_name(),
+            DeclarationOrStatement::Block(ref stmt) => stmt.type_name(),
+            DeclarationOrStatement::ExprStmt(ref stmt) => stmt.type_name(),
+            DeclarationOrStatement::For(ref stmt) => stmt.type_name(),
+            DeclarationOrStatement::While(ref stmt) => stmt.type_name(),
+            DeclarationOrStatement::Print(ref stmt) => stmt.type_name(),
+            DeclarationOrStatement::Return(ref stmt) => stmt.type_name(),
+        }
+    }
+
     #[must_use]
     pub fn ref_cast(node: &'node Cst) -> Option<Self> {
         match node.tag {
@@ -367,7 +477,7 @@ impl SuperClass<'_> {
     pub fn name(&self) -> Option<Ident> {
         self.0.children.iter().find_map(|child| {
             let tok = child.token()?;
-            Ident::ref_cast(tok)
+            Ident::token_cast(tok)
         })
     }
 }
@@ -453,7 +563,7 @@ impl Param<'_> {
     pub fn name(&self) -> Option<Ident> {
         self.0.children.iter().find_map(|child| {
             let tok = child.token()?;
-            Ident::ref_cast(tok)
+            Ident::token_cast(tok)
         })
     }
 }
@@ -541,20 +651,16 @@ impl<'tree> ExprStmt<'tree> {
             .find_map(Expr::ref_cast)
     }
 
-    generate_get_span!(
-        TokenKind::NumericLiteral
-            | TokenKind::KeywordTrue
-            | TokenKind::KeywordFalse
-            | TokenKind::KeywordNil
-            | TokenKind::Ident
-            | TokenKind::StringLiteral
-            | TokenKind::KeywordThis
-            | TokenKind::KeywordSuper
-            | TokenKind::LeftParenthesis
-            | TokenKind::Bang
-            | TokenKind::Minus,
-        TokenKind::Semicolon
-    );
+    /// Return the span of the statement.
+    #[must_use]
+    pub fn get_span(&self) -> Option<Span> {
+        let value_span = self.value()?.get_span()?;
+        let semicolon = self.semicolon()?;
+
+        Some(value_span.merge(*semicolon))
+    }
+
+    generate_get_token!(semicolon, TokenKind::Semicolon);
 }
 
 impl<'tree> Print<'tree> {
@@ -606,10 +712,13 @@ impl<'tree> For<'tree> {
             .iter()
             .find_map(|child| child.tree().and_then(Statement::ref_cast))
     }
+
+    generate_get_token!(for_keyword, TokenKind::KeywordFor);
 }
 
 impl<'tree> ForStmtInitializer<'tree> {
     /// Return the variable declaration if it exists.
+    #[must_use]
     pub fn decl(&self) -> Option<VarDecl<'tree>> {
         self.0
             .children
@@ -618,6 +727,7 @@ impl<'tree> ForStmtInitializer<'tree> {
     }
 
     /// Return the expression statement if it exists.
+    #[must_use]
     pub fn expr_stmt(&self) -> Option<ExprStmt<'tree>> {
         self.0
             .children
@@ -666,6 +776,8 @@ impl<'tree> While<'tree> {
             .iter()
             .find_map(|child| child.tree().and_then(Statement::ref_cast))
     }
+
+    generate_get_token!(while_keyword, TokenKind::KeywordWhile);
 }
 
 impl<'tree> WhileStmtCondition<'tree> {
@@ -686,7 +798,7 @@ impl<'tree> VarDecl<'tree> {
             .children
             .iter()
             .filter_map(|child| child.token())
-            .find_map(Ident::ref_cast)
+            .find_map(Ident::token_cast)
     }
 
     /// Return the initializer if it exists.
@@ -753,14 +865,114 @@ impl<'tree> Arg<'tree> {
             .find_map(Expr::ref_cast)
     }
 }
+
+impl<'tree> ExprGet<'tree> {
+    /// Return the object being accessed if it exists.
+    pub fn object(&self) -> Option<Expr<'tree>> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(Expr::ref_cast)
+    }
+
+    /// Return the name of the field if it exists.
+    #[must_use]
+    pub fn field(&self) -> Option<Ident> {
+        self.0.children.iter().rev().find_map(|child| {
+            let tok = child.token()?;
+            Ident::token_cast(tok)
+        })
+    }
+}
+
+impl<'tree> ExprSet<'tree> {
+    /// Return the object being set if it exists.
+    pub fn object(&self) -> Option<Expr<'tree>> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(Expr::ref_cast)
+    }
+
+    /// Return the value to set the field to if it exists.
+    pub fn value(&self) -> Option<Expr<'tree>> {
+        self.0
+            .children
+            .iter()
+            .rev()
+            .filter_map(|child| child.tree())
+            .find_map(Expr::ref_cast)
+    }
+
+    /// Return the name of the field if it exists.
+    #[must_use]
+    pub fn field(&self) -> Option<Ident> {
+        self.0.children.iter().find_map(|child| {
+            let tok = child.token()?;
+            Ident::token_cast(tok)
+        })
+    }
+}
+
+impl<'tree> ExprAssignment<'tree> {
+    /// Return the destination being assigned to if it exists.
+    pub fn name(&self) -> Option<Ident> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(Ident::ref_cast)
+    }
+
+    /// Return the value to set the destination to if it exists.
+    pub fn value(&self) -> Option<Expr<'tree>> {
+        self.0
+            .children
+            .iter()
+            .rev()
+            .filter_map(|child| child.tree())
+            .find_map(Expr::ref_cast)
+    }
+}
+
+impl ExprSuperMethod<'_> {
+    generate_get_token!(super_keyword, TokenKind::KeywordSuper);
+    generate_get_token!(name, TokenKind::Ident);
+}
+
+impl<'tree> ExprGroup<'tree> {
+    /// Return the inner expression if it exists.
+    pub fn value(&self) -> Option<Expr<'tree>> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(Expr::ref_cast)
+    }
+
+    generate_get_span!(TokenKind::LeftParenthesis, TokenKind::RightParenthesis);
+}
+
 #[derive(Debug)]
 pub enum Expr<'tree> {
+    /// A nil value.
+    Nil(Nil),
+    /// A true value.
+    True(True),
+    /// A false value.
+    False(False),
     /// An identifier.
     Ident(Ident),
     /// A numeric literal.
     NumericLiteral(NumericLiteral),
     /// A string literal.
     StringLiteral(StringLiteral),
+    /// Boolean not.
+    Not(ExprNot<'tree>),
+    /// Or.
+    Neg(ExprNeg<'tree>),
     /// Multiplication.
     Mul(ExprMul<'tree>),
     /// Division.
@@ -787,19 +999,56 @@ pub enum Expr<'tree> {
     Or(ExprOr<'tree>),
     /// Call.
     Call(ExprCall<'tree>),
+    /// Get super class' method.
+    SuperMethod(ExprSuperMethod<'tree>),
+    /// Get.
+    Get(ExprGet<'tree>),
+    /// Set.
+    Set(ExprSet<'tree>),
+    /// Group.
+    Group(ExprGroup<'tree>),
+    /// Assignment.
+    Assignment(ExprAssignment<'tree>),
+    /// The `this` keyword.
+    This(ExprThis),
 }
 
 impl<'node> Expr<'node> {
     #[must_use]
-    pub fn ref_cast(node: &'node Cst) -> Option<Self> {
-        macro_rules! get_atom {
-            ($name:expr) => {
-                node.children
-                    .iter()
-                    .filter_map(|node| node.token())
-                    .find_map(|tok| $name(tok))?
-            };
+    pub fn type_name(&self) -> &'static str {
+        match *self {
+            Expr::Ident(_) => "ExprIdent",
+            Expr::NumericLiteral(_) => "ExprNumericLiteral",
+            Expr::StringLiteral(_) => "ExprStringLiteral",
+            Expr::This(_) => "ExprThis",
+            Expr::Mul(ref expr) => expr.type_name(),
+            Expr::Div(ref expr) => expr.type_name(),
+            Expr::Add(ref expr) => expr.type_name(),
+            Expr::Sub(ref expr) => expr.type_name(),
+            Expr::Lt(ref expr) => expr.type_name(),
+            Expr::Le(ref expr) => expr.type_name(),
+            Expr::Gt(ref expr) => expr.type_name(),
+            Expr::Ge(ref expr) => expr.type_name(),
+            Expr::Ne(ref expr) => expr.type_name(),
+            Expr::Eq(ref expr) => expr.type_name(),
+            Expr::And(ref expr) => expr.type_name(),
+            Expr::Or(ref expr) => expr.type_name(),
+            Expr::Call(ref expr) => expr.type_name(),
+            Expr::Get(ref expr) => expr.type_name(),
+            Expr::Set(ref expr) => expr.type_name(),
+            Expr::Assignment(ref expr) => expr.type_name(),
+            Expr::Not(ref expr) => expr.type_name(),
+            Expr::Neg(ref expr) => expr.type_name(),
+            Expr::SuperMethod(ref expr) => expr.type_name(),
+            Expr::Nil(_) => "ExprNil",
+            Expr::True(_) => "ExprTrue",
+            Expr::False(_) => "ExprFalse",
+            Expr::Group(_) => "ExprGroup",
         }
+    }
+
+    #[must_use]
+    pub fn ref_cast(node: &'node Cst) -> Option<Self> {
         match node.tag {
             TreeKind::ExprBinaryStar => Some(Self::Mul(ExprMul::ref_cast(node)?)),
             TreeKind::ExprBinarySlash => Some(Self::Div(ExprDiv::ref_cast(node)?)),
@@ -813,15 +1062,101 @@ impl<'node> Expr<'node> {
             TreeKind::ExprBinaryBangEqual => Some(Self::Ne(ExprNe::ref_cast(node)?)),
             TreeKind::ExprBinaryAnd => Some(Self::And(ExprAnd::ref_cast(node)?)),
             TreeKind::ExprBinaryOr => Some(Self::Or(ExprOr::ref_cast(node)?)),
+            TreeKind::ExprUnaryBang => Some(Self::Not(ExprNot::ref_cast(node)?)),
+            TreeKind::ExprUnaryMinus => Some(Self::Neg(ExprNeg::ref_cast(node)?)),
             TreeKind::ExprCall => Some(Self::Call(ExprCall::ref_cast(node)?)),
-            TreeKind::ExprIdent => Some(Self::Ident(get_atom!(Ident::ref_cast))),
+            TreeKind::ExprSuperMethod => Some(Self::SuperMethod(ExprSuperMethod::ref_cast(node)?)),
+            TreeKind::ExprGet => Some(Self::Get(ExprGet::ref_cast(node)?)),
+            TreeKind::ExprSet => Some(Self::Set(ExprSet::ref_cast(node)?)),
+            TreeKind::ExprBinaryAssignment => {
+                Some(Self::Assignment(ExprAssignment::ref_cast(node)?))
+            }
+            TreeKind::ExprNil => Some(Self::Nil(Nil::ref_cast(node)?)),
+            TreeKind::ExprTrue => Some(Self::True(True::ref_cast(node)?)),
+            TreeKind::ExprFalse => Some(Self::False(False::ref_cast(node)?)),
+            TreeKind::ExprIdent => Some(Self::Ident(Ident::ref_cast(node)?)),
+            TreeKind::ExprThis => Some(Self::This(ExprThis::ref_cast(node)?)),
+            TreeKind::ExprGroup => Some(Self::Group(ExprGroup::ref_cast(node)?)),
             TreeKind::ExprNumericLiteral => {
-                Some(Self::NumericLiteral(get_atom!(NumericLiteral::ref_cast)))
+                Some(Self::NumericLiteral(NumericLiteral::ref_cast(node)?))
             }
             TreeKind::ExprStringLiteral => {
-                Some(Self::StringLiteral(get_atom!(StringLiteral::ref_cast)))
+                Some(Self::StringLiteral(StringLiteral::ref_cast(node)?))
             }
             _ => None,
+        }
+    }
+
+    /// Return the span of the expression.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "makes more sense to put all get_span code together."
+    )]
+    #[must_use]
+    pub fn get_span(&self) -> Option<Span> {
+        macro_rules! handle_unary {
+            ($node:expr) => {{
+                let op = $node.op_token()?;
+                let operand = $node.operand()?;
+                Some(op.merge(operand.get_span()?))
+            }};
+        }
+
+        macro_rules! handle_binary {
+            ($node:expr) => {{
+                let (lhs, rhs) = $node.operands()?;
+                Some(lhs.get_span()?.merge(rhs.get_span()?))
+            }};
+        }
+
+        match *self {
+            Expr::Nil(ref token) => Some(*token.span()),
+            Expr::True(ref token) => Some(*token.span()),
+            Expr::False(ref token) => Some(*token.span()),
+            Expr::Ident(ref token) => Some(*token.span()),
+            Expr::NumericLiteral(ref token) => Some(*token.span()),
+            Expr::StringLiteral(ref token) => Some(*token.span()),
+            Expr::This(ref token) => Some(*token.span()),
+            Expr::Mul(ref expr) => handle_binary!(expr),
+            Expr::Div(ref expr) => handle_binary!(expr),
+            Expr::Add(ref expr) => handle_binary!(expr),
+            Expr::Sub(ref expr) => handle_binary!(expr),
+            Expr::Lt(ref expr) => handle_binary!(expr),
+            Expr::Le(ref expr) => handle_binary!(expr),
+            Expr::Gt(ref expr) => handle_binary!(expr),
+            Expr::Ge(ref expr) => handle_binary!(expr),
+            Expr::Ne(ref expr) => handle_binary!(expr),
+            Expr::Eq(ref expr) => handle_binary!(expr),
+            Expr::And(ref expr) => handle_binary!(expr),
+            Expr::Or(ref expr) => handle_binary!(expr),
+            Expr::Not(ref expr) => handle_unary!(expr),
+            Expr::Neg(ref expr) => handle_unary!(expr),
+            Expr::Call(ref expr) => {
+                let lhs = expr.callee()?;
+                let rhs = expr.arg_list()?;
+                Some(lhs.get_span()?.merge(rhs.get_span()?))
+            }
+            Expr::SuperMethod(ref expr) => {
+                let lhs = expr.super_keyword()?;
+                let rhs = expr.name()?;
+                Some(lhs.merge(*rhs))
+            }
+            Expr::Get(ref expr) => {
+                let lhs = expr.object()?;
+                let rhs = expr.field()?;
+                Some(lhs.get_span()?.merge(*rhs.span()))
+            }
+            Expr::Set(ref expr) => {
+                let lhs = expr.object()?;
+                let rhs = expr.value()?;
+                Some(lhs.get_span()?.merge(rhs.get_span()?))
+            }
+            Expr::Assignment(ref expr) => {
+                let lhs = expr.name()?;
+                let rhs = expr.value()?;
+                Some(lhs.span().merge(rhs.get_span()?))
+            }
+            Expr::Group(ref expr) => expr.get_span(),
         }
     }
 }

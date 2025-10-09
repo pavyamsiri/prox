@@ -30,10 +30,12 @@ impl ReportableError for CstError {
             CstError::TooManyArguments {
                 list_start,
                 list_end,
+                ..
             } => format_too_many_arguments(path, list_start, list_end),
             CstError::TooManyParameters {
                 list_start,
                 list_end,
+                ..
             } => format_too_many_parameters(path, list_start, list_end),
             CstError::MissingComma { context, actual } => {
                 format_missing_comma(path, context, actual)
@@ -41,11 +43,19 @@ impl ReportableError for CstError {
             CstError::InvalidSuperclass { class_decl, actual } => {
                 format_invalid_superclass(path, class_decl, actual)
             }
+            CstError::MissingFunctionBodyLeftBrace { actual } => {
+                format_missing_function_body_left_brace(path, actual)
+            }
+            CstError::InvalidCharacter { span } => format_invalid_character(path, span),
+            CstError::MissingFieldName { actual } => format_missing_field(path, actual),
+            CstError::UnterminatedString { span } => format_unterminated_string(path, span),
+            CstError::MissingVariableName { actual } => format_missing_variable_name(path, actual),
+            CstError::MissingSemicolon { actual } => format_missing_semicolon(path, actual),
         };
+
         report
             .write((path, Source::from(text)), &mut output)
             .expect("write into buffer should not fail.");
-
         buffer.push_str(
             &String::from_utf8(output.into_inner())
                 .expect("buffer consists of only valid UTF-8 bytes."),
@@ -73,11 +83,7 @@ fn format_unexpected<'err>(
         .finish()
 }
 
-fn format_missing_super_method<'err>(
-    path: &'err str,
-    super_token: Token,
-    actual: Token,
-) -> Report<'err> {
+fn format_missing_super_method(path: &str, super_token: Token, actual: Token) -> Report<'_> {
     let total_span = super_token.span.merge(actual.span);
     Report::build(ReportKind::Error, (path, total_span.range()))
         .with_message("Missing a method name after super".to_owned())
@@ -97,11 +103,7 @@ fn format_missing_super_method<'err>(
         .finish()
 }
 
-fn format_missing_super_dot<'err>(
-    path: &'err str,
-    super_token: Token,
-    actual: Token,
-) -> Report<'err> {
+fn format_missing_super_dot(path: &str, super_token: Token, actual: Token) -> Report<'_> {
     let total_span = super_token.span.merge(actual.span);
     Report::build(ReportKind::Error, (path, total_span.range()))
         .with_message("Missing a dot after super".to_owned())
@@ -121,7 +123,7 @@ fn format_missing_super_dot<'err>(
         .finish()
 }
 
-fn format_invalid_assignment<'err>(path: &'err str, lvalue: Span, value: Span) -> Report<'err> {
+fn format_invalid_assignment(path: &str, lvalue: Span, value: Span) -> Report<'_> {
     let total_span = lvalue.merge(value);
     Report::build(ReportKind::Error, (path, total_span.range()))
         .with_message("Invalid assignment target".to_owned())
@@ -141,11 +143,7 @@ fn format_invalid_assignment<'err>(path: &'err str, lvalue: Span, value: Span) -
         .finish()
 }
 
-fn format_too_many_arguments<'err>(
-    path: &'err str,
-    list_start: Token,
-    list_end: Token,
-) -> Report<'err> {
+fn format_too_many_arguments(path: &str, list_start: Token, list_end: Token) -> Report<'_> {
     let total_span = list_start.span.merge(list_end.span);
     Report::build(ReportKind::Error, (path, total_span.range()))
         .with_message("Called with more than 255 arguments.".to_owned())
@@ -158,11 +156,7 @@ fn format_too_many_arguments<'err>(
         .finish()
 }
 
-fn format_too_many_parameters<'err>(
-    path: &'err str,
-    list_start: Token,
-    list_end: Token,
-) -> Report<'err> {
+fn format_too_many_parameters(path: &str, list_start: Token, list_end: Token) -> Report<'_> {
     let total_span = list_start.span.merge(list_end.span);
     Report::build(ReportKind::Error, (path, total_span.range()))
         .with_message("Function with more than 255 parameters.".to_owned())
@@ -171,6 +165,18 @@ fn format_too_many_parameters<'err>(
             Label::new((path, total_span.range()))
                 .with_color(Color::Red)
                 .with_message("too many parameters".to_owned()),
+        )
+        .finish()
+}
+
+fn format_missing_semicolon(path: &str, actual: Token) -> Report<'_> {
+    Report::build(ReportKind::Error, (path, actual.span.range()))
+        .with_message("Perhaps you missed a semicolon?".to_owned())
+        .with_config(Config::default())
+        .with_label(
+            Label::new((path, actual.span.range()))
+                .with_color(Color::Red)
+                .with_message("missing semicolon before here."),
         )
         .finish()
 }
@@ -191,11 +197,7 @@ fn format_missing_comma<'err>(
         .finish()
 }
 
-fn format_invalid_superclass<'err>(
-    path: &'err str,
-    class_decl: Span,
-    actual: Span,
-) -> Report<'err> {
+fn format_invalid_superclass(path: &str, class_decl: Span, actual: Span) -> Report<'_> {
     Report::build(ReportKind::Error, (path, actual.range()))
         .with_message("Superclass must be an identifier.".to_owned())
         .with_config(Config::default())
@@ -210,6 +212,67 @@ fn format_invalid_superclass<'err>(
                 .with_color(Color::Yellow)
                 .with_message("class declared here".to_owned())
                 .with_order(1),
+        )
+        .finish()
+}
+
+fn format_missing_function_body_left_brace(path: &str, actual: Token) -> Report<'_> {
+    Report::build(ReportKind::Error, (path, actual.span.range()))
+        .with_message("The function body is missing an opening brace.".to_owned())
+        .with_config(Config::default())
+        .with_label(
+            Label::new((path, actual.span.range()))
+                .with_color(Color::Yellow)
+                .with_message("forgot a `{`?".to_owned())
+                .with_order(1),
+        )
+        .finish()
+}
+
+fn format_invalid_character(path: &str, span: Span) -> Report<'_> {
+    Report::build(ReportKind::Error, (path, span.range()))
+        .with_message("Encountered an invalid character.")
+        .with_config(Config::default().with_compact(true))
+        .with_label(
+            Label::new((path, span.range()))
+                .with_color(Color::Yellow)
+                .with_message("this character is not valid."),
+        )
+        .finish()
+}
+
+fn format_unterminated_string(path: &str, span: Span) -> Report<'_> {
+    Report::build(ReportKind::Error, (path, span.range()))
+        .with_message("String was opened but never closed.")
+        .with_config(Config::default().with_compact(true))
+        .with_label(
+            Label::new((path, span.range()))
+                .with_color(Color::Yellow)
+                .with_message("missing a closing quote."),
+        )
+        .finish()
+}
+
+fn format_missing_field(path: &str, actual: Token) -> Report<'_> {
+    Report::build(ReportKind::Error, (path, actual.span.range()))
+        .with_message("Missing field name after `.`.")
+        .with_config(Config::default().with_compact(true))
+        .with_label(
+            Label::new((path, actual.span.range()))
+                .with_color(Color::Yellow)
+                .with_message("should be a field name here."),
+        )
+        .finish()
+}
+
+fn format_missing_variable_name(path: &str, actual: Token) -> Report<'_> {
+    Report::build(ReportKind::Error, (path, actual.span.range()))
+        .with_message("Missing variable name after `var`.")
+        .with_config(Config::default().with_compact(true))
+        .with_label(
+            Label::new((path, actual.span.range()))
+                .with_color(Color::Yellow)
+                .with_message("should be an identifier."),
         )
         .finish()
 }

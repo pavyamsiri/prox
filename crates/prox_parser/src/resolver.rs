@@ -1,13 +1,18 @@
 use crate::cst::ParseError;
 use crate::cst::ParseResult;
+use crate::cst::tree::Cst;
 use crate::cst::tree::typed_trees::BinaryNode;
 use crate::cst::tree::typed_trees::Block;
 use crate::cst::tree::typed_trees::ClassDecl;
-use crate::cst::tree::typed_trees::CstNode;
+use crate::cst::tree::typed_trees::CstNode as _;
 use crate::cst::tree::typed_trees::DeclarationOrStatement;
 use crate::cst::tree::typed_trees::Expr;
+use crate::cst::tree::typed_trees::ExprAssignment;
 use crate::cst::tree::typed_trees::ExprCall;
+use crate::cst::tree::typed_trees::ExprGet;
+use crate::cst::tree::typed_trees::ExprSet;
 use crate::cst::tree::typed_trees::ExprStmt;
+use crate::cst::tree::typed_trees::ExprSuperMethod;
 use crate::cst::tree::typed_trees::FnDecl;
 use crate::cst::tree::typed_trees::For;
 use crate::cst::tree::typed_trees::Ident as CstIdent;
@@ -17,10 +22,11 @@ use crate::cst::tree::typed_trees::Print;
 use crate::cst::tree::typed_trees::Program;
 use crate::cst::tree::typed_trees::Return;
 use crate::cst::tree::typed_trees::Statement;
+use crate::cst::tree::typed_trees::UnaryNode;
 use crate::cst::tree::typed_trees::VarDecl;
 use crate::cst::tree::typed_trees::While;
-use crate::cst::tree::{Cst, TreeKind};
 use core::default;
+use core::fmt;
 use prox_interner::{Interner, Symbol};
 use prox_lexer::SourceCode;
 use prox_lexer::span::Span;
@@ -31,7 +37,7 @@ use std::hash::RandomState;
 pub type ResolutionMap = HashMap<ResolvedIdent, usize>;
 
 /// An identifier.
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct ResolvedIdent {
     /// The intern symbol.
     pub symbol: Symbol,
@@ -39,20 +45,30 @@ pub struct ResolvedIdent {
     pub span: Span,
 }
 
+impl fmt::Debug for ResolvedIdent {
+    #[expect(
+        clippy::min_ident_chars,
+        reason = "keep consistent with trait definition."
+    )]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedIdent")
+            .field("symbol", &self.symbol)
+            .field(
+                "span",
+                &format_args!("Span({}..{})", self.span.start, self.span.end()),
+            )
+            .finish()
+    }
+}
+
 /// An error encountered during parsing and resolution.
 #[derive(Debug)]
 pub enum ResolutionError {
     /// A parser error.
     Parser(ParseError),
-    /// Encountered the wrong node.
-    InvalidNode {
-        /// The span of the node.
-        span: Span,
-        /// The actual node type.
-        actual: TreeKind,
-        /// The expected node type.
-        expected: TreeKind,
-    },
+    /// Given a non-program CST to resolve.
+    /// Note: This is not possible unless the parse result was mutated to have a different root.
+    NotAProgram,
     /// Shadowing a local.
     ShadowLocal {
         /// Previously declared variable.
@@ -92,6 +108,87 @@ pub enum ResolutionError {
         /// The span of the constructor statement.
         constructor: Span,
     },
+    /// Accessing super in a non-class scope.
+    NonClassSuper {
+        /// The span of the super expression.
+        span: Span,
+    },
+    /// Accessing super in a non-subclass scope.
+    NonSubClassSuper {
+        /// The span of the super expression.
+        span: Span,
+    },
+    /// Accessing this in a non-class scope.
+    NonClassThis {
+        /// The span of the this expression.
+        span: Span,
+    },
+}
+
+impl ResolutionError {
+    /// Format a resolution error as a single line into the given buffer.
+    ///
+    /// # Errors
+    /// This function will error if it can not write into the buffer or if the input is
+    /// malformed.
+    ///
+    /// The input is malformed if the given source code does not correspond to the spans pointed
+    /// to by the error.
+    pub fn format(
+        &self,
+        source: &SourceCode<'_>,
+        buffer: &mut impl fmt::Write,
+    ) -> Result<(), fmt::Error> {
+        match *self {
+            ResolutionError::Parser(ref error) => error.format(source, buffer),
+            ResolutionError::NotAProgram => write!(buffer, "This is not a valid program!"),
+            ResolutionError::ShadowLocal { new, .. } => write!(
+                buffer,
+                "Error at '{}': Already a variable with this name in this scope.",
+                source.get_lexeme(&new.span).ok_or(fmt::Error)?
+            ),
+            ResolutionError::SelfReferentialInitializer { reference, .. } => write!(
+                buffer,
+                "Error at '{}': Can't read local variable in its own initializer.",
+                source.get_lexeme(&reference.span).ok_or(fmt::Error)?
+            ),
+            ResolutionError::SelfReferentialInheritance { destination, .. } => {
+                let class_name = &source.get_lexeme(&destination.span).ok_or(fmt::Error)?;
+                write!(
+                    buffer,
+                    "Error at '{class_name}': A class can't inherit from itself."
+                )
+            }
+            ResolutionError::NonFunctionReturn { .. } => {
+                write!(
+                    buffer,
+                    "Error at 'return': Can't return from top-level code."
+                )
+            }
+            ResolutionError::ReturnValueInConstructor { .. } => {
+                write!(
+                    buffer,
+                    "Error at 'return': Can't return a value from an initializer."
+                )
+            }
+            ResolutionError::NonClassSuper { .. } => {
+                write!(
+                    buffer,
+                    "Error at 'super': Can't use 'super' outside of a class."
+                )
+            }
+            ResolutionError::NonSubClassSuper { .. } => write!(
+                buffer,
+                "Error at 'super': Can't use 'super' in a class with no superclass."
+            ),
+            ResolutionError::NonClassThis { .. } => {
+                write!(
+                    buffer,
+                    "Error at 'this': Can't use 'this' outside of a class."
+                )
+            }
+        }
+    }
 }
 
 /// A resolved CST.
@@ -228,24 +325,6 @@ impl Resolver {
         ResolvedIdent { symbol, span }
     }
 
-    /// Attempt to cast to the given type and then return it. If it could not be cast then
-    /// report an error.
-    fn expect_node<'node, T: CstNode<'node>>(&mut self, node: &'node Cst) -> Option<T> {
-        if let Some(node) = T::ref_cast(node) {
-            Some(node)
-        } else {
-            self.errors.push(ResolutionError::InvalidNode {
-                span: Span {
-                    start: 0,
-                    length: 1,
-                },
-                actual: node.tag,
-                expected: T::expected_type(),
-            });
-            None
-        }
-    }
-
     /// Declare that a variable exists given its name and the span of the whole declaration.
     fn declare(&mut self, ident: &ResolvedIdent, span: Span) {
         let Some(inner_scope) = self.scopes.last_mut() else {
@@ -317,8 +396,11 @@ impl Resolver {
     ) -> Result<ResolvedCst<'_>, Vec<ResolutionError>> {
         self.errors
             .extend(program.errors.into_iter().map(ResolutionError::Parser));
-        if let Some(prog) = self.expect_node::<Program>(&program.root) {
+
+        if let Some(prog) = Program::ref_cast(&program.root) {
             self.resolve_program(&program.source, prog);
+        } else {
+            self.errors.push(ResolutionError::NotAProgram);
         }
 
         if self.errors.is_empty() {
@@ -349,8 +431,8 @@ impl Resolver {
     ) {
         match decl_or_stmt {
             DeclarationOrStatement::Var(decl) => self.resolve_var_decl(source, &decl, outer),
-            DeclarationOrStatement::Class(decl) => self.resolve_class_decl(source, &decl, outer),
-            DeclarationOrStatement::Fn(decl) => self.resolve_fn_decl(source, &decl, outer),
+            DeclarationOrStatement::Class(decl) => self.resolve_class_decl(source, &decl),
+            DeclarationOrStatement::Fn(decl) => self.resolve_fn_decl(source, &decl),
             DeclarationOrStatement::If(stmt) => self.resolve_if(source, &stmt, outer),
             DeclarationOrStatement::Block(stmt) => self.resolve_block(source, &stmt, outer),
             DeclarationOrStatement::ExprStmt(stmt) => self.resolve_expr_stmt(source, &stmt, outer),
@@ -389,7 +471,7 @@ impl Resolver {
     }
 
     /// Resolve a class declaration.
-    fn resolve_class_decl(&mut self, source: &SourceCode, decl: &ClassDecl, outer: &Span) {
+    fn resolve_class_decl(&mut self, source: &SourceCode, decl: &ClassDecl) {
         let enclosing = self.class;
         self.class = ClassEnvironment::Class;
 
@@ -464,7 +546,7 @@ impl Resolver {
     }
 
     /// Resolve a function declaration.
-    fn resolve_fn_decl(&mut self, source: &SourceCode, decl: &FnDecl, outer: &Span) {
+    fn resolve_fn_decl(&mut self, source: &SourceCode, decl: &FnDecl) {
         let fn_keyword = early_return!(decl.fn_keyword());
         let body = early_return!(decl.body());
         let right_brace = early_return!(body.right_brace());
@@ -609,12 +691,25 @@ impl Resolver {
     /// Resolve an expression.
     fn resolve_expr(&mut self, source: &SourceCode, outer: &Span, expr: &Expr) {
         match *expr {
-            Expr::NumericLiteral(_) | Expr::StringLiteral(_) => {}
+            Expr::NumericLiteral(_)
+            | Expr::StringLiteral(_)
+            | Expr::Nil(_)
+            | Expr::True(_)
+            | Expr::False(_) => {}
             Expr::Ident(ref ident) => {
                 let ident = early_return!(self.convert_ident(source, ident));
                 self.resolve_variable_expression(&ident);
             }
-
+            Expr::This(ref span) => match self.class {
+                ClassEnvironment::None => {
+                    self.errors
+                        .push(ResolutionError::NonClassThis { span: *span.span() });
+                }
+                ClassEnvironment::Class | ClassEnvironment::SubClass => {
+                    let ident = self.create_ident("this", *span.span());
+                    self.resolve_variable_expression(&ident);
+                }
+            },
             Expr::Mul(ref expr) => {
                 self.resolve_binary_expr(source, outer, expr);
             }
@@ -647,8 +742,26 @@ impl Resolver {
             }
             Expr::And(ref expr) => self.resolve_binary_expr(source, outer, expr),
             Expr::Or(ref expr) => self.resolve_binary_expr(source, outer, expr),
+            Expr::Not(ref expr) => self.resolve_unary_expr(source, outer, expr),
+            Expr::Neg(ref expr) => self.resolve_unary_expr(source, outer, expr),
             Expr::Call(ref call) => self.resolve_call(source, outer, call),
+            Expr::Get(ref get) => self.resolve_get(source, outer, get),
+            Expr::Set(ref set) => self.resolve_set(source, outer, set),
+            Expr::Assignment(ref assign) => self.resolve_assignment(source, outer, assign),
+            Expr::SuperMethod(ref expr) => self.resolve_super_method(expr),
+            Expr::Group(ref expr) => self.resolve_expr(source, outer, &early_return!(expr.value())),
         }
+    }
+
+    /// Resolve a unary expression.
+    fn resolve_unary_expr<'tree>(
+        &mut self,
+        source: &SourceCode,
+        outer: &Span,
+        expr: &impl UnaryNode<'tree>,
+    ) {
+        let operand = early_return!(expr.operand());
+        self.resolve_expr(source, outer, &operand);
     }
 
     /// Resolve a binary expression.
@@ -672,6 +785,53 @@ impl Resolver {
             let arg_expr = early_return!(arg.value());
             self.resolve_expr(source, outer, &arg_expr);
         }
+    }
+
+    /// Resolve an expression get/field access.
+    fn resolve_get(&mut self, source: &SourceCode, outer: &Span, get: &ExprGet) {
+        let object = early_return!(get.object());
+        self.resolve_expr(source, outer, &object);
+    }
+
+    /// Resolve an expression set/field mutation.
+    fn resolve_set(&mut self, source: &SourceCode, outer: &Span, set: &ExprSet) {
+        let value = early_return!(set.value());
+        self.resolve_expr(source, outer, &value);
+
+        let object = early_return!(set.object());
+        self.resolve_expr(source, outer, &object);
+    }
+
+    /// Resolve a super method get.
+    fn resolve_super_method(&mut self, super_method: &ExprSuperMethod) {
+        let span = *early_return!(super_method.super_keyword());
+        match self.class {
+            ClassEnvironment::None => {
+                self.errors.push(ResolutionError::NonClassSuper { span });
+            }
+            ClassEnvironment::Class => {
+                self.errors.push(ResolutionError::NonSubClassSuper { span });
+            }
+            ClassEnvironment::SubClass => {
+                let ident = self.create_ident("super", span);
+                self.resolve_variable(&ident);
+            }
+        }
+    }
+
+    /// Resolve an expression assignment.
+    fn resolve_assignment(
+        &mut self,
+        source: &SourceCode,
+        outer: &Span,
+        assignment: &ExprAssignment,
+    ) {
+        let value = early_return!(assignment.value());
+        self.resolve_expr(source, outer, &value);
+
+        let name = early_return!(assignment.name());
+        let ident = early_return!(self.convert_ident(source, &name));
+        self.resolve_variable(&ident);
     }
 
     /// Resolve an identifier.

@@ -318,6 +318,7 @@ dependencies = [
  "prox_lexer",
  "prox_parser",
  "prox_walker",
+ "tracing",
  "tracing-subscriber",
 ]
 
@@ -327,6 +328,7 @@ version = "0.0.0"
 dependencies = [
  "ariadne",
  "prox_parser",
+ "prox_walker",
 ]
 
 [[package]]

@@ -21,8 +21,8 @@ pub enum TreeKind {
     ExprStringLiteral,
     /// Numeric literal.
     ExprNumericLiteral,
-    /// An super method call i.e. `super.method`.
-    ExprSuperCall,
+    /// An super method get i.e. `super.method`.
+    ExprSuperMethod,
     /// An expression group i.e. `(expr)`.
     ExprGroup,
 
@@ -206,7 +206,7 @@ impl TreeKind {
             TreeKind::ExprStringLiteral => "a string literal",
             TreeKind::ExprNumericLiteral => "a numeric literal",
             TreeKind::ExprIdent => "an identifier",
-            TreeKind::ExprSuperCall => "a super call",
+            TreeKind::ExprSuperMethod => "a super call",
             TreeKind::ExprGroup => "an expression group",
             TreeKind::ExprBinaryAssignment => "an assignment expression",
             TreeKind::ExprCall => "an expression call",

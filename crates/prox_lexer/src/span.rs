@@ -13,7 +13,13 @@ impl Span {
     /// Convert the span into a range.
     #[must_use]
     pub const fn range(self) -> ops::Range<usize> {
-        self.start..(self.start + self.length)
+        self.start..self.end()
+    }
+
+    /// Return the end index.
+    #[must_use]
+    pub const fn end(self) -> usize {
+        self.start + self.length
     }
 
     /// Merge two spans.

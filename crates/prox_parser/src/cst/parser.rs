@@ -168,6 +168,16 @@ impl fmt::Display for ExprContext {
 /// An error encountered when parsing.
 #[derive(Debug)]
 pub enum ParseError {
+    /// Invalid characters.
+    InvalidCharacter {
+        /// The span of the character in the source.
+        span: Span,
+    },
+    /// Unterminated string.
+    UnterminatedString {
+        /// The span of the unterminated string.
+        span: Span,
+    },
     /// The parser expected a token but got another token instead.
     Expected {
         /// The actual token.
@@ -198,12 +208,19 @@ pub enum ParseError {
         /// The non-method name token.
         actual: Token,
     },
+    /// Missing variable name after `var`.
+    MissingVariableName {
+        /// The non-identifier token.
+        actual: Token,
+    },
     /// Too many arguments.
     TooManyArguments {
         /// The `(` token.
         list_start: Token,
         /// The `)` token.
         list_end: Token,
+        /// The first argument that went over the limit.
+        invalid: Span,
     },
     /// Too many parameters.
     TooManyParameters {
@@ -211,6 +228,8 @@ pub enum ParseError {
         list_start: Token,
         /// The `)` token.
         list_end: Token,
+        /// The first parameter that went over the limit.
+        invalid: Span,
     },
     /// Missing a comma while parsing an argument or parameter list.
     MissingComma {
@@ -226,6 +245,137 @@ pub enum ParseError {
         /// The tree that isn't the super class name.
         actual: Span,
     },
+    /// The function body's opening brace is missing.
+    MissingFunctionBodyLeftBrace {
+        /// The token that isn't `{`.
+        actual: Token,
+    },
+    /// Missing a field name while parsing a get/set.
+    MissingFieldName {
+        /// The non-identifier token.
+        actual: Token,
+    },
+    /// Missing a terminating semicolon.
+    MissingSemicolon {
+        /// The non-semicolon token.
+        actual: Token,
+    },
+}
+
+impl ParseError {
+    /// Format a resolution error as a single line into the given buffer.
+    ///
+    /// # Errors
+    /// This function will error if it can not write into the buffer or if the input is
+    /// malformed.
+    ///
+    /// The input is malformed if the given source code does not correspond to the spans pointed
+    /// to by the error.
+    pub fn format(
+        &self,
+        source: &SourceCode<'_>,
+        buffer: &mut impl fmt::Write,
+    ) -> Result<(), fmt::Error> {
+        match *self {
+            ParseError::Expected { actual, .. } => write!(
+                buffer,
+                "[line {}] Error at '{}': Expect expression.",
+                source.get_line(&actual.span).start,
+                source.get_lexeme(&actual.span).ok_or(fmt::Error)?,
+            ),
+            ParseError::MissingFunctionBodyLeftBrace { actual } => {
+                write!(
+                    buffer,
+                    "[line {}] Error at '{}': Expect '{{' before function body.",
+                    source.get_line(&actual.span).start,
+                    source.get_lexeme(&actual.span).ok_or(fmt::Error)?,
+                )
+            }
+            ParseError::InvalidAssignment { .. } => {
+                write!(buffer, "Error at '=': Invalid assignment target.")
+            }
+            ParseError::MissingDotAfterSuper { actual, .. } => {
+                write!(
+                    buffer,
+                    "[line {}] Error at '{}': Expect '.' after 'super'.",
+                    source.get_line(&actual.span).start,
+                    source.get_lexeme(&actual.span).ok_or(fmt::Error)?,
+                )
+            }
+            ParseError::MissingSuperMethod { actual, .. } => {
+                write!(
+                    buffer,
+                    "Error at '{}': Expect superclass method name.",
+                    source.get_lexeme(&actual.span).ok_or(fmt::Error)?,
+                )
+            }
+            ParseError::TooManyArguments { invalid, .. } => write!(
+                buffer,
+                "Error at '{}': Can't have more than 255 arguments.",
+                source.get_lexeme(&invalid).ok_or(fmt::Error)?
+            ),
+            ParseError::TooManyParameters { invalid, .. } => write!(
+                buffer,
+                "Error at '{}': Can't have more than 255 parameters.",
+                source.get_lexeme(&invalid).ok_or(fmt::Error)?
+            ),
+            ParseError::MissingComma {
+                actual, context, ..
+            } => write!(
+                buffer,
+                "[line {}] Error at '{}': Expect ')' after {}s.",
+                source.get_line(&actual.span).start,
+                source.get_lexeme(&actual.span).ok_or(fmt::Error)?,
+                context,
+            ),
+            ParseError::InvalidSuperclass { actual, .. } => {
+                write!(
+                    buffer,
+                    "[line {}] Error at '{}': Expect superclass name.",
+                    source.get_line(&actual).start,
+                    source.get_lexeme(&actual).ok_or(fmt::Error)?,
+                )
+            }
+            ParseError::InvalidCharacter { span } => {
+                write!(
+                    buffer,
+                    "[line {}] Error: Unexpected character.",
+                    source.get_line(&span).start,
+                )
+            }
+            ParseError::MissingFieldName { actual } => {
+                write!(
+                    buffer,
+                    "[line {}] Error at '{}': Expect property name after '.'.",
+                    source.get_line(&actual.span).start,
+                    source.get_lexeme(&actual.span).ok_or(fmt::Error)?,
+                )
+            }
+            ParseError::UnterminatedString { span } => {
+                write!(
+                    buffer,
+                    "[line {}] Error: Unterminated string.",
+                    source.get_line(&span).start,
+                )
+            }
+            ParseError::MissingVariableName { actual } => {
+                write!(
+                    buffer,
+                    "[line {}] Error at '{}': Expect variable name.",
+                    source.get_line(&actual.span).start,
+                    source.get_lexeme(&actual.span).ok_or(fmt::Error)?,
+                )
+            }
+            ParseError::MissingSemicolon { actual } => {
+                write!(
+                    buffer,
+                    "[line {}] Error at '{}': Expect ';' after statement.",
+                    source.get_line(&actual.span).start,
+                    source.get_lexeme(&actual.span).ok_or(fmt::Error)?,
+                )
+            }
+        }
+    }
 }
 
 /// Events emitted during parsing.
@@ -401,14 +551,29 @@ impl Parser<'_> {
     }
 
     fn advance(&mut self) -> MarkClosed {
-        assert!(!self.is_eof(), "can't advance a token at EOF.");
         // Reset fuel
         let mark = MarkClosed {
             index: self.events.len(),
         };
+
+        if self.is_eof() {
+            return mark;
+        }
+
         self.fuel.set(256);
+
         self.events.push(Event::Advance);
         self.current_index += 1;
+
+        // Check for token errors
+        if let Token {
+            tag: TokenKind::ErrorUnknownChar,
+            span,
+        } = self.peek_token(0)
+        {
+            self.errors.push(ParseError::InvalidCharacter { span });
+        }
+
         mark
     }
 
@@ -543,10 +708,6 @@ impl Parser<'_> {
 
 impl<'src> Parser<'src> {
     /// Construct the CST.
-    #[expect(
-        clippy::result_large_err,
-        reason = "neither the ok and err variants are unlikely."
-    )]
     fn build_tree(self) -> ParseResult<'src> {
         let mut tokens = self.tokens.into_iter();
         let mut events = self.events;
@@ -643,6 +804,11 @@ impl Parser<'_> {
         while !self.is_eof() {
             if self.at_any(DECL_FIRST) {
                 self.decl();
+            } else if self.at(TokenKind::ErrorUnterminatedString) {
+                self.report_error(ParseError::UnterminatedString {
+                    span: self.peek_token(0).span,
+                });
+                self.advance();
             } else {
                 self.advance_with_error("declaration");
             }
@@ -834,7 +1000,9 @@ impl Parser<'_> {
         if self.at(TokenKind::LeftBrace) {
             self.stmt_block();
         } else {
-            self.report_error_with_message("function body block");
+            self.report_error(ParseError::MissingFunctionBodyLeftBrace {
+                actual: self.peek_token(0),
+            });
         }
     }
 
@@ -858,10 +1026,14 @@ impl Parser<'_> {
 
         // Parameters
         let mut param_count = 0;
+        let mut invalid = None;
         while !self.at(TokenKind::RightParenthesis) && !self.is_eof() {
             // Consume parameter name + trailing trivia
             if self.at(TokenKind::Ident) {
-                self.param();
+                let param_mark = self.param();
+                if param_count == 255 {
+                    invalid = Some(self.get_span_between(param_mark, None));
+                }
                 param_count += 1;
             } else {
                 // Probably not in a parameter list anymore
@@ -874,12 +1046,18 @@ impl Parser<'_> {
             self.consume_trivia();
         }
 
-        if param_count > 255 {
+        if let Some(invalid) = invalid {
             let list_end = self.peek_token(0);
             self.report_error(ParseError::TooManyParameters {
                 list_start,
                 list_end,
+                invalid,
             });
+        } else {
+            assert!(
+                param_count <= 255,
+                "handling `invalid` above should ensure this."
+            );
         }
 
         // Closing parenthesis
@@ -892,7 +1070,7 @@ impl Parser<'_> {
     /// param -> IDENTIFIER ( "," IDENTIFIER )* ;
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
-    fn param(&mut self) {
+    fn param(&mut self) -> MarkClosed {
         assert!(
             self.at(TokenKind::Ident),
             "parameters always begin with an identifier."
@@ -900,8 +1078,8 @@ impl Parser<'_> {
         let mark = self.open();
 
         self.expect(TokenKind::Ident);
-        let actual = self.peek_token(0);
         self.consume_trivia();
+        let actual = self.peek_token(0);
 
         // At closing parenthesis or comma
         if self.at(TokenKind::Comma) {
@@ -915,7 +1093,7 @@ impl Parser<'_> {
             self.param();
             self.consume_trivia();
         }
-        self.close(mark, TreeKind::Param);
+        self.close(mark, TreeKind::Param)
     }
 
     /// Parses a block statement
@@ -1101,7 +1279,10 @@ impl Parser<'_> {
         if self.at(TokenKind::Ident) {
             self.expect(TokenKind::Ident);
         } else {
-            self.advance_with_error("ident");
+            self.report_error(ParseError::MissingVariableName {
+                actual: self.peek_token(0),
+            });
+            self.advance();
         }
         self.consume_trivia();
 
@@ -1204,7 +1385,13 @@ impl Parser<'_> {
         self.expr();
         self.consume_trivia();
 
-        self.expect(TokenKind::Semicolon);
+        if self.at(TokenKind::Semicolon) {
+            self.advance();
+        } else if self.is_eof() || self.at_any(DECL_FIRST) {
+            self.report_error(ParseError::MissingSemicolon {
+                actual: self.peek_token(0),
+            });
+        }
 
         self.pop_stmt_context();
         self.close(mark, TreeKind::StmtExpr);
@@ -1229,15 +1416,13 @@ impl Parser<'_> {
         let mut lhs = self.expr_delimited()?;
         self.consume_trivia();
 
-        // NOTE(pavyamsiri): Technically we should break if the min_bp is >= the binding power
-        // if the operator is valid but as there are no overlaps this works as well.
         loop {
             let right = self.peek_kind(0);
 
             // Call operator
             if self.at(TokenKind::LeftParenthesis)
                 && min_bp
-                    < postfix_binding_power(right)
+                    <= postfix_binding_power(right)
                         .expect("left parenthesis is the postfix call operator.")
             {
                 self.push_expr_context(ExprContext::Call);
@@ -1254,7 +1439,7 @@ impl Parser<'_> {
             // Field accessors
             if self.at(TokenKind::Dot)
                 && min_bp
-                    < postfix_binding_power(right).expect("dot is the postfix get/set operator.")
+                    <= postfix_binding_power(right).expect("dot is the postfix get/set operator.")
             {
                 self.push_expr_context(ExprContext::GetSet);
                 let mark = self.open_before(lhs);
@@ -1262,7 +1447,17 @@ impl Parser<'_> {
                 self.expect(TokenKind::Dot);
                 self.consume_trivia();
 
-                self.expect(TokenKind::Ident);
+                if self.at(TokenKind::Ident) {
+                    self.advance();
+                } else {
+                    self.report_error(ParseError::MissingFieldName {
+                        actual: self.peek_token(0),
+                    });
+                    if self.at(TokenKind::Semicolon) {
+                    } else {
+                        self.advance();
+                    }
+                }
                 self.consume_trivia();
 
                 // Set
@@ -1287,7 +1482,7 @@ impl Parser<'_> {
 
             // Assignment infix
             if let Some((tree_kind, l_bp, r_bp)) = assignment_infix_binding_power(right)
-                && min_bp < l_bp
+                && min_bp <= l_bp
             {
                 lhs = self.expr_assignment(lhs, tree_kind, r_bp);
                 continue;
@@ -1295,7 +1490,7 @@ impl Parser<'_> {
 
             // Short circuit infix
             if let Some((tree_kind, l_bp, r_bp)) = short_circuit_infix_binding_power(right)
-                && min_bp < l_bp
+                && min_bp <= l_bp
             {
                 self.push_expr_context(ExprContext::AndOr);
                 let mark = self.open_before(lhs);
@@ -1313,7 +1508,7 @@ impl Parser<'_> {
 
             // Normal infix
             if let Some((tree_kind, l_bp, r_bp)) = infix_binding_power(right)
-                && min_bp < l_bp
+                && min_bp <= l_bp
             {
                 self.push_expr_context(ExprContext::Binary);
                 let mark = self.open_before(lhs);
@@ -1494,7 +1689,7 @@ impl Parser<'_> {
         }
 
         self.pop_expr_context();
-        self.close(mark, TreeKind::ExprSuperCall)
+        self.close(mark, TreeKind::ExprSuperMethod)
     }
 
     /// Parses a group expression.
@@ -1534,9 +1729,13 @@ impl Parser<'_> {
         self.consume_trivia();
 
         let mut arg_count = 0;
+        let mut invalid = None;
         while !self.at(TokenKind::RightParenthesis) && !self.is_eof() {
             if self.at_any(EXPR_FIRST) {
-                self.arg();
+                let arg_mark = self.arg();
+                if arg_count == 255 {
+                    invalid = Some(self.get_span_between(arg_mark, None));
+                }
                 self.consume_trivia();
             } else {
                 self.advance_with_error("an arg");
@@ -1544,11 +1743,17 @@ impl Parser<'_> {
             arg_count += 1;
         }
         let list_end = self.peek_token(0);
-        if arg_count > 255 {
+        if let Some(invalid_arg) = invalid {
             self.report_error(ParseError::TooManyArguments {
                 list_start,
                 list_end,
+                invalid: invalid_arg,
             });
+        } else {
+            assert!(
+                arg_count <= 255,
+                "handling `invalid` above should ensure this."
+            );
         }
 
         self.expect(TokenKind::RightParenthesis);
@@ -1560,7 +1765,7 @@ impl Parser<'_> {
     /// arg -> expression ( "," expression )* ;
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
-    fn arg(&mut self) {
+    fn arg(&mut self) -> MarkClosed {
         let mark = self.open();
 
         self.expr();
@@ -1570,18 +1775,19 @@ impl Parser<'_> {
         if self.at(TokenKind::Comma) {
             self.expect(TokenKind::Comma);
         } else if self.at(TokenKind::RightParenthesis) {
-        } else if self.at(TokenKind::Ident) {
+        } else {
             self.report_error(ParseError::MissingComma {
                 context: "argument",
                 actual,
             });
-            self.arg();
-            self.consume_trivia();
-        } else {
-            self.advance_with_error("argument");
+            if self.at(TokenKind::Ident) {
+                self.arg();
+            } else {
+                self.advance();
+            }
             self.consume_trivia();
         }
-        self.close(mark, TreeKind::Arg);
+        self.close(mark, TreeKind::Arg)
     }
 
     /// Parses an if statement

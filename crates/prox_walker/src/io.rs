@@ -6,8 +6,12 @@ pub trait IoContext: fmt::Write {}
 pub struct StdoutContext;
 
 impl fmt::Write for StdoutContext {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        println!("{s}");
+    #[expect(
+        clippy::min_ident_chars,
+        reason = "keep consistent with trait definition."
+    )]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        print!("{s}");
         Ok(())
     }
 }
@@ -17,20 +21,29 @@ impl IoContext for StdoutContext {}
 pub struct StderrContext;
 
 impl fmt::Write for StderrContext {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        eprintln!("{s}");
+    #[expect(
+        clippy::min_ident_chars,
+        reason = "keep consistent with trait definition."
+    )]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        eprint!("{s}");
         Ok(())
     }
 }
 
 impl IoContext for StderrContext {}
 
+#[derive(Default)]
 pub struct BufferContext {
     data: String,
 }
 
 impl fmt::Write for BufferContext {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+    #[expect(
+        clippy::min_ident_chars,
+        reason = "keep consistent with trait definition."
+    )]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
         self.data.push_str(s);
         Ok(())
     }
@@ -39,11 +52,17 @@ impl fmt::Write for BufferContext {
 impl IoContext for BufferContext {}
 
 impl BufferContext {
+    #[must_use]
     pub fn new() -> Self {
-        Self {
-            data: String::new(),
-        }
+        Self::default()
     }
+
+    #[must_use]
+    pub const fn with_buffer(data: String) -> Self {
+        Self { data }
+    }
+
+    #[must_use]
     pub fn flush(self) -> String {
         self.data
     }

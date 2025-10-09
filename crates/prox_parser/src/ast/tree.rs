@@ -1,7 +1,6 @@
 use core::convert;
 use core::default;
 use core::fmt;
-use core::iter;
 use core::num::NonZeroU32;
 use prox_interner::{Interner, Symbol};
 use prox_lexer::span::Span;
@@ -36,19 +35,9 @@ impl NodeIndex {
 struct ExtraIndex(u32);
 
 impl ExtraIndex {
-    /// Create a new extra data index.
-    pub const fn new(index: u32) -> Self {
-        Self(index)
-    }
-
     /// Convert back into a raw index.
-    pub const fn raw(self) -> u32 {
+    const fn raw(self) -> u32 {
         self.0
-    }
-
-    /// Convert into a `usize`.
-    pub const fn as_usize(self) -> usize {
-        self.0 as usize
     }
 }
 
@@ -85,6 +74,12 @@ impl NodeData {
         let hi = u64::from(self.rhs);
         let bits = (hi << 32) | lo;
         f64::from_bits(bits)
+    }
+
+    /// Get the stored boolean assuming this node is a `Boolean` tag.
+    #[must_use]
+    pub const fn bool(&self) -> bool {
+        self.lhs == 1
     }
 
     /// Get the symbol.
@@ -130,7 +125,7 @@ pub enum NodeTag {
     /// `rhs` = extra data length.
     /// `token` = name of class (symbol).
     /// `extra_data` = (fcount, f1, f2, ..., fn, superclass?)
-    /// `superclass` = name of superclass (symbol).
+    /// `superclass` = index to superclass which must be `Ident`.
     /// `superclass` is optional and its presence can be deduced from the extra data length.
     StmtClassDecl,
     /// A block.
@@ -180,9 +175,9 @@ pub enum NodeTag {
 
     // Expressions.
     /// Unary expression.
-    /// `lhs` = unary op enum.
-    /// `rhs` = value.
-    /// `token` = null.
+    /// `lhs` = value.
+    /// `rhs` = null.
+    /// `token` = unary op enum.
     Unary,
     /// Binary expression.
     /// `lhs` = lhs expression.
@@ -227,6 +222,11 @@ pub enum NodeTag {
     /// `rhs` = null.
     /// `token` = intern symbol.
     Ident,
+    /// String literals.
+    /// `lhs` = null.
+    /// `rhs` = null.
+    /// `token` = intern symbol.
+    StringLiteral,
     /// Number as double precision floating point.
     /// `lhs` = low byte.
     /// `rhs` = high byte.
@@ -282,6 +282,24 @@ impl BinaryOp {
     const fn raw(self) -> u8 {
         self as u8
     }
+
+    /// Return the string representation.
+    const fn as_str(self) -> &'static str {
+        match self {
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Lt => "<",
+            BinaryOp::Le => "<=",
+            BinaryOp::Gt => ">",
+            BinaryOp::Ge => ">=",
+            BinaryOp::Ne => "!=",
+            BinaryOp::Eq => "==",
+            BinaryOp::And => "and",
+            BinaryOp::Or => "or",
+        }
+    }
 }
 
 impl convert::TryFrom<u32> for BinaryOp {
@@ -309,11 +327,11 @@ impl convert::TryFrom<u32> for BinaryOp {
 /// Unary operations.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UnaryOp {
+pub enum UnaryOp {
     /// Numeric negation.
-    Neg,
+    Neg = 0,
     /// Boolean negation.
-    Not,
+    Not = 1,
 }
 
 impl UnaryOp {
@@ -321,8 +339,27 @@ impl UnaryOp {
     const fn raw(self) -> u8 {
         self as u8
     }
+
+    /// Return the string representation.
+    const fn as_str(self) -> &'static str {
+        match self {
+            UnaryOp::Neg => "-",
+            UnaryOp::Not => "!",
+        }
+    }
 }
 
+impl convert::TryFrom<u32> for UnaryOp {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Neg),
+            1 => Ok(Self::Not),
+            _ => Err(()),
+        }
+    }
+}
 pub struct Ast {
     /// List of nodes.
     nodes: NodeList,
@@ -336,6 +373,12 @@ pub struct Ast {
     spans: Vec<Span>,
     /// Root note index.
     root: NodeIndex,
+    /// Super keyword.
+    kw_super: Symbol,
+    /// This keyword.
+    kw_this: Symbol,
+    /// The symbol for `init`; the name for constructors.
+    init_sym: Symbol,
 }
 
 impl fmt::Debug for Ast {
@@ -383,37 +426,25 @@ impl NodeList {
     }
 
     /// Return the node tag.
-    pub fn tag(&self, index: NodeIndex) -> NodeTag {
+    fn tag(&self, index: NodeIndex) -> NodeTag {
         self.tags[index.as_usize()]
     }
 
     /// Return the data tag.
-    pub fn data(&self, index: NodeIndex) -> NodeData {
+    fn data(&self, index: NodeIndex) -> NodeData {
         self.data[index.as_usize()]
     }
 
     /// Update a node.
-    pub fn update(&mut self, index: NodeIndex, data: NodeData) {
+    fn update(&mut self, index: NodeIndex, data: NodeData) {
         self.data[index.as_usize()] = data;
     }
 }
 
 impl default::Default for Ast {
     fn default() -> Self {
-        let mut nodes = NodeList::new();
-        let root = nodes.add(NodeTag::Program, NodeData::EMPTY);
-        let empty_span = Span {
-            start: 0,
-            length: 0,
-        };
-
-        Self {
-            nodes,
-            extra_data: Vec::with_capacity(1024),
-            spans: vec![empty_span, empty_span],
-            strings: Interner::with_hasher(hash::RandomState::new()),
-            root,
-        }
+        let interner = Interner::with_hasher(hash::RandomState::new());
+        Self::with_interner(interner)
     }
 }
 
@@ -426,10 +457,27 @@ impl Ast {
 
     /// Create a new AST with a pre-existing interner.
     #[must_use]
-    pub fn with_interner(interner: Interner) -> Self {
+    pub fn with_interner(mut interner: Interner) -> Self {
+        let mut nodes = NodeList::new();
+        let root = nodes.add(NodeTag::Program, NodeData::EMPTY);
+        let empty_span = Span {
+            start: 0,
+            length: 0,
+        };
+
+        let kw_super = interner.intern("super");
+        let kw_this = interner.intern("this");
+        let init_sym = interner.intern("init");
+
         Self {
+            nodes,
+            extra_data: Vec::with_capacity(1024),
+            spans: vec![empty_span, empty_span],
             strings: interner,
-            ..Default::default()
+            root,
+            kw_super,
+            kw_this,
+            init_sym,
         }
     }
 
@@ -496,6 +544,36 @@ impl Ast {
     pub fn resolve(&self, symbol: Symbol) -> Option<&str> {
         self.strings.resolve(symbol)
     }
+
+    /// Return a reference to the interner.
+    #[must_use]
+    pub const fn get_interner(&self) -> &Interner {
+        &self.strings
+    }
+
+    /// Return a mutable reference to the interner.
+    #[must_use]
+    pub const fn get_interner_mut(&mut self) -> &mut Interner {
+        &mut self.strings
+    }
+
+    /// Return the symbol representing the super keyword.
+    #[must_use]
+    pub const fn kw_super(&self) -> Symbol {
+        self.kw_super
+    }
+
+    /// Return the symbol representing the super keyword.
+    #[must_use]
+    pub const fn kw_this(&self) -> Symbol {
+        self.kw_this
+    }
+
+    /// Return the symbol representing the init constructor name.
+    #[must_use]
+    pub const fn init_sym(&self) -> Symbol {
+        self.init_sym
+    }
 }
 
 #[derive(Default)]
@@ -560,9 +638,9 @@ impl AstBuilder {
     /// Add a unary expression.
     pub fn build_unary(&mut self, op: UnaryOp, value: NodeIndex, span: Span) -> NodeIndex {
         let data = NodeData {
-            lhs: u32::from(op.raw()),
-            rhs: value.raw(),
-            token_or_symbol: 0,
+            lhs: value.raw(),
+            rhs: 0,
+            token_or_symbol: u32::from(op.raw()),
         };
         self.ast.add_node(NodeTag::Unary, data, span)
     }
@@ -589,15 +667,20 @@ impl AstBuilder {
     }
 
     /// Add a class declaration.
+    ///
+    /// # Panics
+    /// This function will panic if given 2^32 or more methods.
     pub fn build_class(
         &mut self,
         name: Symbol,
-        super_class: Option<Symbol>,
+        super_class: Option<NodeIndex>,
         methods: &[NodeIndex],
         span: Span,
     ) -> NodeIndex {
-        let mut extra_data = vec![methods.len().try_into().expect("too many methods.")];
+        let num_methods = methods.len().try_into().expect("too many methods");
+        let mut extra_data = vec![num_methods];
         extra_data.extend(methods.iter().map(|param| param.raw()));
+
         if let Some(super_class) = super_class {
             extra_data.push(super_class.raw());
         }
@@ -649,6 +732,16 @@ impl AstBuilder {
             token_or_symbol: name.raw(),
         };
         self.ast.add_node(NodeTag::Ident, data, span)
+    }
+
+    /// Add string.
+    pub fn build_string(&mut self, name: Symbol, span: Span) -> NodeIndex {
+        let data = NodeData {
+            lhs: 0,
+            rhs: 0,
+            token_or_symbol: name.raw(),
+        };
+        self.ast.add_node(NodeTag::StringLiteral, data, span)
     }
 
     /// Add number.
@@ -857,134 +950,7 @@ impl AstBuilder {
     }
 }
 
-impl Ast {
-    pub fn traverse(&self) {
-        self.visit_node(self.root);
-    }
-
-    /// Visit node.
-    fn visit_node(&self, index: NodeIndex) {
-        let data = self.nodes.data(index);
-        let tag = self.nodes.tag(index);
-
-        println!("At {tag:?} with data = {data:#?}");
-
-        // Return an iterator based on node type
-        match tag {
-            NodeTag::Program => {
-                println!("At program root.");
-                let extra_data = self.extra_data(index);
-                for stmt_index in extra_data {
-                    println!("Visiting {stmt_index}...");
-                    self.visit_node(NodeIndex::new(stmt_index).expect("encountered null node."));
-                }
-            }
-            NodeTag::StmtFnDecl => {
-                let mut extra_data = self.extra_data(index);
-                let is_method = extra_data.next().unwrap();
-                println!("At function declaration. Method = {}", is_method == 1);
-                let block = extra_data.next().unwrap();
-                for parameter in extra_data {
-                    let name = self.strings.resolve(Symbol::from(parameter)).unwrap();
-                    println!("\tParameter = {name:?}");
-                }
-                self.visit_node(NodeIndex::new(block).unwrap());
-            }
-            NodeTag::Block => {
-                let extra_data: Vec<_> = self.extra_data(index).collect();
-                println!("Visiting {extra_data:?}...");
-                for stmt_index in extra_data {
-                    self.visit_node(NodeIndex::new(stmt_index).expect("encountered null node."));
-                }
-            }
-            NodeTag::If => {
-                println!("If");
-                let condition = NodeIndex::new(data.rhs).unwrap();
-                let then = NodeIndex::new(data.token_or_symbol).unwrap();
-                println!("CONDITION");
-                self.visit_node(condition);
-                println!("THEN");
-                self.visit_node(then);
-                if let Some(else_block) = self.extra_data(index).next() {
-                    println!("ELSE");
-                    self.visit_node(NodeIndex::new(else_block).unwrap());
-                }
-            }
-            NodeTag::Binary => {
-                let op = BinaryOp::try_from(data.token_or_symbol).unwrap();
-                println!("Binary: lhs {op:?} rhs");
-                self.visit_node(NodeIndex::new(data.lhs).unwrap());
-                self.visit_node(NodeIndex::new(data.rhs).unwrap());
-            }
-            NodeTag::Ident => {
-                let name = self
-                    .strings
-                    .resolve(Symbol::from(data.token_or_symbol))
-                    .unwrap();
-                println!("Identifier = {name}");
-            }
-            NodeTag::Number => {
-                let value = data.number();
-                println!("Number = {value}");
-            }
-            NodeTag::Return => {
-                println!("RETURNING");
-                if let Some(value) = NodeIndex::new(data.lhs) {
-                    println!("with value");
-                    self.visit_node(value);
-                }
-            }
-            NodeTag::Print => {
-                println!("PRINTING");
-                let value = NodeIndex::new(data.lhs).unwrap();
-                self.visit_node(value);
-            }
-            NodeTag::Call => {
-                println!("CALLING");
-                let callee = NodeIndex::new(data.token_or_symbol).unwrap();
-                self.visit_node(callee);
-                let extra_data = self.extra_data(index);
-                for arg in extra_data {
-                    let arg_index = NodeIndex::new(arg).unwrap();
-                    self.visit_node(arg_index);
-                }
-            }
-            NodeTag::StmtVarDecl => {
-                let name = self
-                    .strings
-                    .resolve(Symbol::from(data.token_or_symbol))
-                    .unwrap();
-                println!("DECLARING {name}");
-                if let Some(rvalue) = NodeIndex::new(data.lhs) {
-                    println!("rvalue");
-                    self.visit_node(rvalue);
-                }
-            }
-            _ => {
-                todo!()
-            }
-        }
-    }
-}
-
-pub struct ExtraDataIterator<'data> {
-    data: &'data [u32],
-    start: usize,
-    end: usize,
-}
-
-impl iter::Iterator for ExtraDataIterator<'_> {
-    type Item = u32;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        (self.start < self.end).then(|| {
-            let index = self.start;
-            self.start += 1;
-            self.data[index]
-        })
-    }
-}
-
+// Extra data accessors.
 impl Ast {
     /// Return the slice over extra data assuming the node has start in `lhs` and length in `rhs`.
     #[must_use]
@@ -993,6 +959,29 @@ impl Ast {
         let start = data.lhs as usize;
         let length = data.rhs as usize;
         &self.extra_data[start..(start + length)]
+    }
+
+    /// Return a class declaration's extra data. This function does no checking and assumes that the node tag
+    /// is `StmtClassDecl`.
+    ///
+    /// # Panics
+    /// This function will panic if the number of methods (1st element of extra data)
+    /// is not equal to the length of the extra data array minus 1
+    /// (the number of methods + the method count) or the length of the extra data array
+    /// minus 2 (the number of methods + the method count + the super class).
+    #[must_use]
+    pub fn class_decl_extra(&self, index: NodeIndex) -> (&[u32], Option<NodeIndex>) {
+        let extra_data = self.extra_data_slice(index);
+        let length = extra_data.len();
+        let num_methods = extra_data[0] as usize;
+        assert!(
+            ((num_methods + 1) == length) || (num_methods + 2 == length),
+            "extra data holds methods + count + optionally a super class."
+        );
+        let super_class = (num_methods + 2 == length)
+            .then(|| NodeIndex::new(extra_data[num_methods + 1]).expect("malformed AST."));
+
+        (&extra_data[1..=num_methods], super_class)
     }
 
     /// Return a function declaration's extra data. This function does no checking and assumes that the node tag
@@ -1016,58 +1005,369 @@ impl Ast {
         has_else.then(|| self.extra_data[start + 1])
     }
 
+    /// Return a for statements's extra data. This function does no checking and assumes that the node tag
+    /// is `For`.
+    ///
+    /// # Panics
+    /// This function expects that the extra data pointed to by the data will have at least
+    /// the three flags, `has_initializer`, `has_condition` and `has_increment`.
     #[must_use]
-    pub fn extra_data(&self, index: NodeIndex) -> ExtraDataIterator<'_> {
-        let data = self.nodes.data(index);
-        let tag = self.nodes.tag(index);
-        println!("Extra data = {:?}", self.extra_data);
+    pub fn for_extra(&self, index: NodeIndex) -> (Option<u32>, Option<u32>, Option<u32>) {
+        let mut extra_data = self.extra_data_slice(index).iter();
+        assert!(
+            extra_data.len() >= 3,
+            "extra data should have at least the three flags."
+        );
+
+        let has_initializer = *extra_data.next().unwrap() == 1;
+        let initializer = has_initializer.then(|| {
+            let initializer = extra_data.next().unwrap();
+            *initializer
+        });
+
+        let has_condition = *extra_data.next().unwrap() == 1;
+        let condition = has_condition.then(|| {
+            let condition = extra_data.next().unwrap();
+            *condition
+        });
+
+        let has_increment = *extra_data.next().unwrap() == 1;
+        let increment = has_increment.then(|| {
+            let increment = extra_data.next().unwrap();
+            *increment
+        });
+
+        (initializer, condition, increment)
+    }
+}
+
+// Format an AST node.
+impl Ast {
+    /// Format an AST node into the given buffer.
+    ///
+    /// # Errors
+    /// If any of the child AST nodes are malformed this function fails.
+    /// The buffer may be partially written to still.
+    pub fn dump(&self, buffer: &mut impl fmt::Write, index: NodeIndex) -> Result<(), fmt::Error> {
+        self.dump_impl(buffer, index, 0)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "formatting code is going to be long."
+    )]
+    fn dump_impl(
+        &self,
+        buffer: &mut impl fmt::Write,
+        index: NodeIndex,
+        depth: u8,
+    ) -> Result<(), fmt::Error> {
+        let tag = self.tag(index);
+        let data = self.data(index);
+
+        let indent = " ".repeat(2 * depth as usize);
+        let next_depth = depth.saturating_add(1);
 
         match tag {
-            NodeTag::Program | NodeTag::StmtFnDecl | NodeTag::Block | NodeTag::Call => {
-                let start = data.lhs as usize;
-                let length = data.rhs as usize;
-                ExtraDataIterator {
-                    data: &self.extra_data,
-                    start,
-                    end: start + length,
+            NodeTag::Program => {
+                let statements = self.extra_data_slice(index);
+                writeln!(buffer, "{indent}Program:")?;
+                for stmt in statements {
+                    self.dump_impl(buffer, NodeIndex::new(*stmt).ok_or(fmt::Error)?, next_depth)?;
                 }
             }
-            NodeTag::StmtVarDecl => todo!(),
-            NodeTag::StmtClassDecl => todo!(),
-            NodeTag::If => {
-                let start = data.lhs as usize;
-                let has_else = self.extra_data[start] == 1;
-                if has_else {
-                    ExtraDataIterator {
-                        data: &self.extra_data,
-                        start: start + 1,
-                        end: start + 2,
+            NodeTag::StmtFnDecl => {
+                let next_indent = " ".repeat(2 * next_depth as usize);
+                let second_indent = " ".repeat(2 * (next_depth.saturating_add(1)) as usize);
+                let third_indent = " ".repeat(2 * (next_depth.saturating_add(2)) as usize);
+                let name = {
+                    let sym = data.symbol();
+                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                };
+                let (is_method, body, parameters) = self.fn_decl_extra(index);
+                let func_or_meth = if is_method { "meth" } else { "func" };
+
+                writeln!(buffer, "{indent}FnDecl [{name}/{func_or_meth}]:")?;
+                writeln!(buffer, "{next_indent}ParamList:")?;
+
+                tracing::debug!("BEFORE PARAM @ decl with index {index:?} ");
+
+                if !parameters.is_empty() {
+                    for (param_index, param) in parameters.iter().enumerate() {
+                        let param_name = self.resolve((*param).into()).ok_or(fmt::Error)?;
+                        writeln!(buffer, "{second_indent}Param{param_index}:")?;
+                        writeln!(buffer, "{third_indent}\"{param_name}\"")?;
                     }
+                }
+                writeln!(buffer, "{next_indent}Body:")?;
+                self.dump_impl(
+                    buffer,
+                    NodeIndex::new(body).ok_or(fmt::Error)?,
+                    next_depth.saturating_add(1),
+                )?;
+            }
+            NodeTag::Call => {
+                let callee = NodeIndex::new(data.middle()).ok_or(fmt::Error)?;
+                let args = self.extra_data_slice(index);
+
+                let next_indent = " ".repeat(2 * next_depth as usize);
+                let second_indent = " ".repeat(2 * (next_depth.saturating_add(1)) as usize);
+                writeln!(buffer, "{indent}ExprCall:")?;
+                writeln!(buffer, "{next_indent}Callee: ")?;
+                self.dump_impl(buffer, callee, next_depth.saturating_add(1))?;
+
+                if !args.is_empty() {
+                    writeln!(buffer, "{next_indent}Args:")?;
+                    for (arg_index, arg) in args.iter().enumerate() {
+                        writeln!(buffer, "{second_indent}Arg{arg_index}:")?;
+                        self.dump_impl(
+                            buffer,
+                            NodeIndex::new(*arg).ok_or(fmt::Error)?,
+                            next_depth.saturating_add(2),
+                        )?;
+                    }
+                }
+            }
+            NodeTag::StmtVarDecl => {
+                let name = {
+                    let sym = data.symbol();
+                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                };
+                writeln!(buffer, "{indent}VarDecl [{name}]:")?;
+
+                if let Some(value) = data.left() {
+                    self.dump_impl(buffer, value, next_depth)?;
+                }
+            }
+            NodeTag::StmtClassDecl => {
+                let next_indent = " ".repeat(2 * next_depth as usize);
+                let second_indent = " ".repeat(2 * (next_depth.saturating_add(1)) as usize);
+                let name = {
+                    let sym = data.symbol();
+                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                };
+                let (methods, super_class) = self.class_decl_extra(index);
+                if let Some(super_class) = super_class {
+                    let super_class_name = self
+                        .strings
+                        .resolve(self.data(super_class).symbol())
+                        .ok_or(fmt::Error)?;
+                    writeln!(buffer, "{indent}ClassDecl [{name} < {super_class_name}]:")?;
                 } else {
-                    ExtraDataIterator {
-                        data: &self.extra_data,
-                        start: 0,
-                        end: 0,
-                    }
+                    writeln!(buffer, "{indent}ClassDecl [{name}]:")?;
+                }
+
+                writeln!(buffer, "{next_indent}Methods:")?;
+                for (method_index, method) in methods.iter().enumerate() {
+                    writeln!(buffer, "{second_indent}Method{method_index}:")?;
+                    self.dump_impl(
+                        buffer,
+                        NodeIndex::new(*method).ok_or(fmt::Error)?,
+                        next_depth.saturating_add(2),
+                    )?;
                 }
             }
-            NodeTag::Return => todo!(),
-            NodeTag::Print => todo!(),
-            NodeTag::For => todo!(),
-            NodeTag::While => todo!(),
-            NodeTag::ExprStmt => todo!(),
-            NodeTag::Unary => todo!(),
-            NodeTag::Binary => todo!(),
-            NodeTag::Group => todo!(),
-            NodeTag::Assignment => todo!(),
-            NodeTag::SuperMethod => todo!(),
-            NodeTag::FieldGet => todo!(),
-            NodeTag::FieldSet => todo!(),
-            NodeTag::Ident => todo!(),
-            NodeTag::Number => todo!(),
-            NodeTag::Boolean => todo!(),
-            NodeTag::Nil => todo!(),
-            NodeTag::Error => todo!(),
+            NodeTag::Block => {
+                let statements = self.extra_data_slice(index);
+                writeln!(buffer, "{indent}Block:")?;
+                for stmt in statements {
+                    self.dump_impl(buffer, NodeIndex::new(*stmt).ok_or(fmt::Error)?, next_depth)?;
+                }
+            }
+            NodeTag::If => {
+                let next_indent = " ".repeat(2 * next_depth as usize);
+
+                let condition = data.right().ok_or(fmt::Error)?;
+                let then_clause = NodeIndex::new(data.middle()).ok_or(fmt::Error)?;
+
+                writeln!(buffer, "{indent}If:")?;
+                writeln!(buffer, "{next_indent}Condition:")?;
+                self.dump_impl(buffer, condition, next_depth.saturating_add(1))?;
+
+                writeln!(buffer, "{next_indent}Then:")?;
+                self.dump_impl(buffer, then_clause, next_depth.saturating_add(1))?;
+
+                if let Some(else_clause) = self.if_extra(index) {
+                    writeln!(buffer, "{next_indent}Else:")?;
+                    self.dump_impl(
+                        buffer,
+                        NodeIndex::new(else_clause).ok_or(fmt::Error)?,
+                        next_depth.saturating_add(1),
+                    )?;
+                }
+            }
+            NodeTag::For => {
+                let next_indent = " ".repeat(2 * next_depth as usize);
+
+                let (initializer, condition, increment) = self.for_extra(index);
+                let body = NodeIndex::new(data.middle()).ok_or(fmt::Error)?;
+
+                writeln!(buffer, "{indent}For:")?;
+
+                if let Some(initializer) = initializer {
+                    writeln!(buffer, "{next_indent}Initializer:")?;
+                    self.dump_impl(
+                        buffer,
+                        NodeIndex::new(initializer).ok_or(fmt::Error)?,
+                        next_depth.saturating_add(1),
+                    )?;
+                }
+
+                if let Some(condition) = condition {
+                    writeln!(buffer, "{next_indent}Condition:")?;
+                    self.dump_impl(
+                        buffer,
+                        NodeIndex::new(condition).ok_or(fmt::Error)?,
+                        next_depth.saturating_add(1),
+                    )?;
+                }
+
+                if let Some(increment) = increment {
+                    writeln!(buffer, "{next_indent}Increment:")?;
+                    self.dump_impl(
+                        buffer,
+                        NodeIndex::new(increment).ok_or(fmt::Error)?,
+                        next_depth.saturating_add(1),
+                    )?;
+                }
+
+                writeln!(buffer, "{next_indent}Body:")?;
+                self.dump_impl(buffer, body, next_depth.saturating_add(1))?;
+            }
+            NodeTag::While => {
+                let next_indent = " ".repeat(2 * next_depth as usize);
+
+                let condition = data.left().ok_or(fmt::Error)?;
+                let body = data.right().ok_or(fmt::Error)?;
+
+                writeln!(buffer, "{indent}While:")?;
+                writeln!(buffer, "{next_indent}Condition:")?;
+                self.dump_impl(buffer, condition, next_depth.saturating_add(1))?;
+
+                writeln!(buffer, "{next_indent}Body:")?;
+                self.dump_impl(buffer, body, next_depth.saturating_add(1))?;
+            }
+            NodeTag::Return => {
+                writeln!(buffer, "{indent}Return:")?;
+                if let Some(lhs) = data.left() {
+                    self.dump_impl(buffer, lhs, next_depth)?;
+                }
+            }
+            NodeTag::Print => {
+                writeln!(buffer, "{indent}Print:")?;
+                let lhs = data.left().ok_or(fmt::Error)?;
+                self.dump_impl(buffer, lhs, next_depth)?;
+            }
+            NodeTag::ExprStmt => {
+                writeln!(buffer, "{indent}ExprStmt:")?;
+                let lhs = data.left().ok_or(fmt::Error)?;
+                self.dump_impl(buffer, lhs, next_depth)?;
+            }
+            NodeTag::Unary => {
+                let op = UnaryOp::try_from(data.token_or_symbol)
+                    .map_err(|()| fmt::Error)?
+                    .as_str();
+                let value = data.left().ok_or(fmt::Error)?;
+
+                writeln!(buffer, "ExprUnary [{op}]:")?;
+                self.dump_impl(buffer, value, next_depth)?;
+            }
+            NodeTag::Binary => {
+                let op = BinaryOp::try_from(data.token_or_symbol)
+                    .map_err(|()| fmt::Error)?
+                    .as_str();
+                let (Some(lhs), Some(rhs)) = (data.left(), data.right()) else {
+                    return Err(fmt::Error);
+                };
+
+                let next_indent = " ".repeat(2 * next_depth as usize);
+
+                writeln!(buffer, "{indent}ExprBinary [{op}]:")?;
+
+                writeln!(buffer, "{next_indent}LHS:")?;
+                self.dump_impl(buffer, lhs, next_depth.saturating_add(1))?;
+
+                writeln!(buffer, "{next_indent}RHS:")?;
+                self.dump_impl(buffer, rhs, next_depth.saturating_add(1))?;
+            }
+            NodeTag::Group => {
+                let value = data.left().ok_or(fmt::Error)?;
+                writeln!(buffer, "{indent}Group:")?;
+                self.dump_impl(buffer, value, next_depth)?;
+            }
+            NodeTag::Assignment => {
+                let value = data.left().ok_or(fmt::Error)?;
+                let name = {
+                    let sym = data.symbol();
+                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                };
+
+                writeln!(buffer, "{indent}ExprAssign [{name}]:")?;
+                self.dump_impl(buffer, value, next_depth)?;
+            }
+            NodeTag::FieldGet => {
+                let next_indent = " ".repeat(2 * next_depth as usize);
+                let second_indent = " ".repeat(2 * next_depth.saturating_add(1) as usize);
+                let object = data.left().ok_or(fmt::Error)?;
+                let field = {
+                    let sym = data.symbol();
+                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                };
+
+                writeln!(buffer, "{indent}FieldGet:")?;
+                writeln!(buffer, "{next_indent}Instance:")?;
+                self.dump_impl(buffer, object, next_depth.saturating_add(1))?;
+                writeln!(buffer, "{next_indent}Field:")?;
+                writeln!(buffer, "{second_indent}{field}")?;
+            }
+            NodeTag::FieldSet => {
+                let next_indent = " ".repeat(2 * next_depth as usize);
+                let second_indent = " ".repeat(2 * next_depth.saturating_add(1) as usize);
+                let object = data.left().ok_or(fmt::Error)?;
+                let value = data.right().ok_or(fmt::Error)?;
+                let field = {
+                    let sym = data.symbol();
+                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                };
+
+                writeln!(buffer, "{indent}FieldSet:")?;
+                writeln!(buffer, "{next_indent}Instance:")?;
+                self.dump_impl(buffer, object, next_depth.saturating_add(1))?;
+                writeln!(buffer, "{next_indent}Field:")?;
+                writeln!(buffer, "{second_indent}{field}")?;
+                writeln!(buffer, "{next_indent}Value:")?;
+                self.dump_impl(buffer, value, next_depth.saturating_add(1))?;
+            }
+            NodeTag::SuperMethod => {
+                let next_indent = " ".repeat(2 * next_depth as usize);
+                let name = {
+                    let sym = data.symbol();
+                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                };
+
+                writeln!(buffer, "{indent}SuperMethod:")?;
+                writeln!(buffer, "{next_indent}{name}")?;
+            }
+            NodeTag::Ident => {
+                let lexeme = self.strings.resolve(data.symbol()).ok_or(fmt::Error)?;
+                writeln!(buffer, "{indent}{lexeme}")?;
+            }
+            NodeTag::StringLiteral => {
+                let lexeme = self.strings.resolve(data.symbol()).ok_or(fmt::Error)?;
+                writeln!(buffer, "{indent}{lexeme:?}")?;
+            }
+            NodeTag::Number => {
+                let number = data.number();
+                writeln!(buffer, "{indent}{number}")?;
+            }
+            NodeTag::Boolean => {
+                let flag = data.lhs == 1;
+                writeln!(buffer, "{indent}{flag}")?;
+            }
+            NodeTag::Nil => writeln!(buffer, "{indent}nil")?,
+            NodeTag::Error => writeln!(buffer, "{indent}error")?,
         }
+
+        Ok(())
     }
 }

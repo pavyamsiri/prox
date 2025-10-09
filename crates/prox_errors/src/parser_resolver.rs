@@ -1,8 +1,7 @@
 use crate::ReportableError;
-use ariadne::{Color, Config, Label, LabelAttach, Report as AReport, ReportKind, Source};
+use ariadne::{Color, Config, Label, Report as AReport, ReportKind, Source};
 use core::ops;
 use prox_parser::Span;
-use prox_parser::cst::tree::TreeKind;
 use prox_parser::resolver::{ResolutionError, ResolvedIdent};
 use std::io;
 
@@ -13,19 +12,20 @@ impl ReportableError for ResolutionError {
         if let ResolutionError::Parser(ref err) = *self {
             err.report(buffer, path, text);
             return;
-        };
-
+        }
         let mut output = io::Cursor::new(Vec::new());
 
         let report = match *self {
-            ResolutionError::Parser(ref err) => {
+            ResolutionError::Parser(..) => {
                 unreachable!("just handled this case above.");
             }
-            ResolutionError::InvalidNode {
-                span,
-                actual,
-                expected,
-            } => format_invalid_node(path, &actual, &expected, &span),
+            ResolutionError::NotAProgram => format_not_a_program(
+                path,
+                &Span {
+                    start: 0,
+                    length: text.len(),
+                },
+            ),
             ResolutionError::SelfReferentialInheritance {
                 destination,
                 reference,
@@ -43,12 +43,14 @@ impl ReportableError for ResolutionError {
             ResolutionError::ReturnValueInConstructor { span, constructor } => {
                 format_constructor_return(path, &span, &constructor)
             }
+            ResolutionError::NonClassSuper { span } => format_non_class_super(path, &span),
+            ResolutionError::NonSubClassSuper { span } => format_non_subclass_super(path, &span),
+            ResolutionError::NonClassThis { span } => format_non_class_this(path, &span),
         };
 
         report
             .write((path, Source::from(text)), &mut output)
             .expect("write into buffer should not fail.");
-
         buffer.push_str(
             &String::from_utf8(output.into_inner())
                 .expect("buffer consists of only valid UTF-8 bytes."),
@@ -56,19 +58,15 @@ impl ReportableError for ResolutionError {
     }
 }
 
-fn format_invalid_node<'err>(
-    path: &'err str,
-    actual: &TreeKind,
-    expected: &TreeKind,
-    span: &Span,
-) -> Report<'err> {
+fn format_not_a_program<'err>(path: &'err str, span: &Span) -> Report<'err> {
     Report::build(ReportKind::Error, (path, span.range()))
-        .with_message(format!("Expected a {expected:?}"))
+        .with_message("This is not a program which can only happen if the parsed root was changed.")
         .with_config(Config::default().with_compact(true))
         .with_label(
             Label::new((path, span.range()))
-                .with_color(Color::Yellow)
-                .with_message(format!("but found {actual:?}",)),
+                .with_color(Color::Red)
+                .with_order(1)
+                .with_message("corrupted parse?"),
         )
         .finish()
 }
@@ -84,13 +82,13 @@ fn format_self_inheritance<'err>(
         .with_config(Config::default().with_compact(true))
         .with_label(
             Label::new((path, destination.span.range()))
-                .with_color(Color::Yellow)
+                .with_color(Color::Red)
                 .with_order(0)
                 .with_message("inheriting from"),
         )
         .with_label(
             Label::new((path, reference.span.range()))
-                .with_color(Color::Yellow)
+                .with_color(Color::Red)
                 .with_order(1)
                 .with_message("itself"),
         )
@@ -108,13 +106,13 @@ fn format_self_initialization<'err>(
         .with_config(Config::default().with_compact(true))
         .with_label(
             Label::new((path, destination.span.range()))
-                .with_color(Color::Yellow)
+                .with_color(Color::Red)
                 .with_order(0)
                 .with_message("initializing this variable"),
         )
         .with_label(
             Label::new((path, reference.span.range()))
-                .with_color(Color::Yellow)
+                .with_color(Color::Red)
                 .with_order(1)
                 .with_message("with itself"),
         )
@@ -132,13 +130,13 @@ fn format_shadow_local<'err>(
         .with_config(Config::default().with_compact(true))
         .with_label(
             Label::new((path, old.span.range()))
-                .with_color(Color::Yellow)
+                .with_color(Color::Red)
                 .with_order(0)
                 .with_message("the variable is declared here"),
         )
         .with_label(
             Label::new((path, new.span.range()))
-                .with_color(Color::Yellow)
+                .with_color(Color::Red)
                 .with_order(1)
                 .with_message("and is being shadowed by this"),
         )
@@ -173,8 +171,43 @@ fn format_constructor_return<'err>(
         )
         .with_label(
             Label::new((path, constructor.range()))
-                .with_color(Color::Yellow)
+                .with_color(Color::Red)
                 .with_message("inside constructor"),
+        )
+        .finish()
+}
+
+fn format_non_class_super<'err>(path: &'err str, span: &Span) -> Report<'err> {
+    Report::build(ReportKind::Error, (path, span.range()))
+        .with_message("Used `super` outside of a class.")
+        .with_config(Config::default().with_compact(true))
+        .with_label(
+            Label::new((path, span.range()))
+                .with_color(Color::Red)
+                .with_message("outside of a class."),
+        )
+        .finish()
+}
+
+fn format_non_subclass_super<'err>(path: &'err str, span: &Span) -> Report<'err> {
+    Report::build(ReportKind::Error, (path, span.range()))
+        .with_message("Used `super` outside of a subclass.")
+        .with_config(Config::default().with_compact(true))
+        .with_label(
+            Label::new((path, span.range()))
+                .with_color(Color::Red)
+                .with_message("outside of a subclass."),
+        )
+        .finish()
+}
+fn format_non_class_this<'err>(path: &'err str, span: &Span) -> Report<'err> {
+    Report::build(ReportKind::Error, (path, span.range()))
+        .with_message("Used `this` outside of a class.")
+        .with_config(Config::default().with_compact(true))
+        .with_label(
+            Label::new((path, span.range()))
+                .with_color(Color::Red)
+                .with_message("outside of a class."),
         )
         .finish()
 }

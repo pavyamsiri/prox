@@ -730,7 +730,7 @@ impl Parser<'_> {
 
     /// Parses a class declaration.
     /// ```grammar
-    /// classDecl -> "class" IDENTIFIER ( "<" IDENTIFIER )? "{" function* "}" ;
+    /// classDecl -> "class" IDENTIFIER superClass? "{" function* "}" ;
     /// ```
     /// Assumes leading trivia has been consumed and does not consume trailing trivia.
     fn decl_class(&mut self) {
@@ -750,25 +750,10 @@ impl Parser<'_> {
         self.expect(TokenKind::Ident);
         self.consume_trivia();
 
+        // Inheritance
         if self.at(TokenKind::LessThan) {
-            self.expect(TokenKind::LessThan);
+            self.decl_class_superclass(class_start.span.merge(class_end.span));
             self.consume_trivia();
-
-            // Super class
-            if self.at(TokenKind::Ident) {
-                self.expect(TokenKind::Ident);
-                self.consume_trivia();
-            } else if self.at_any(EXPR_FIRST) {
-                let expr_mark = self
-                    .expr()
-                    .expect("already checked we are at a expression boundary.");
-
-                self.report_error(ParseError::InvalidSuperclass {
-                    class_decl: class_start.span.merge(class_end.span),
-                    actual: self.get_span_between(expr_mark, None),
-                });
-                self.consume_trivia();
-            }
         }
 
         // Open brace
@@ -792,6 +777,37 @@ impl Parser<'_> {
 
         self.pop_stmt_context();
         self.close(mark, TreeKind::StmtClassDecl);
+    }
+
+    /// Parses a class declaration's super class declaration.
+    /// ```grammar
+    /// superClass -> "<" IDENTIFIER ;
+    /// ```
+    /// Assumes leading trivia has been consumed and does not consume trailing trivia.
+    fn decl_class_superclass(&mut self, span: Span) {
+        assert!(
+            self.at(TokenKind::LessThan),
+            "superclass always begin with `<`."
+        );
+        let mark = self.open();
+
+        self.expect(TokenKind::LessThan);
+        self.consume_trivia();
+
+        if self.at(TokenKind::Ident) {
+            self.expect(TokenKind::Ident);
+        } else if self.at_any(EXPR_FIRST) {
+            let expr_mark = self
+                .expr()
+                .expect("already checked we are at a expression boundary.");
+
+            self.report_error(ParseError::InvalidSuperclass {
+                class_decl: span,
+                actual: self.get_span_between(expr_mark, None),
+            });
+        }
+
+        self.close(mark, TreeKind::SuperClass);
     }
 
     /// Parses a function.
@@ -950,7 +966,9 @@ impl Parser<'_> {
         self.expect(TokenKind::LeftParenthesis);
         self.consume_trivia();
 
+        let condition_mark = self.open();
         self.expr();
+        self.close(condition_mark, TreeKind::WhileStmtCondition);
         self.consume_trivia();
 
         self.expect(TokenKind::RightParenthesis);
@@ -991,11 +1009,19 @@ impl Parser<'_> {
 
         // Initializer
         match self.peek_kind(0) {
-            TokenKind::KeywordVar => self.decl_var(),
+            TokenKind::KeywordVar => {
+                let init_mark = self.open();
+                self.decl_var();
+                self.close(init_mark, TreeKind::ForStmtInitializer);
+            }
             TokenKind::Semicolon => {
                 self.expect(TokenKind::Semicolon);
             }
-            expr_first!() => self.stmt_expr(),
+            expr_first!() => {
+                let init_mark = self.open();
+                self.stmt_expr();
+                self.close(init_mark, TreeKind::ForStmtInitializer);
+            }
             TokenKind::LeftBrace => {
                 self.report_error_with_message("for initializer");
                 self.stmt_block();
@@ -1012,9 +1038,11 @@ impl Parser<'_> {
 
         // Condition
         if self.at_any(EXPR_FIRST) {
+            let condition_mark = self.open();
             self.expr();
             self.consume_trivia();
             self.expect(TokenKind::Semicolon);
+            self.close(condition_mark, TreeKind::ForStmtCondition);
         } else if self.at(TokenKind::LeftBrace) {
             self.report_error_with_message("for condition");
             self.stmt_block();
@@ -1030,12 +1058,14 @@ impl Parser<'_> {
 
         // Increment
         if self.at_any(EXPR_FIRST) {
+            let increment_mark = self.open();
             self.expr();
-            self.consume_trivia();
+            self.close(increment_mark, TreeKind::ForStmtIncrement);
         } else if self.at_any(DECL_FIRST) {
             self.report_error_with_message("for increment");
             self.decl();
         }
+        self.consume_trivia();
         self.expect(TokenKind::RightParenthesis);
         self.consume_trivia();
 
@@ -1545,7 +1575,10 @@ impl Parser<'_> {
                 context: "argument",
                 actual,
             });
-            self.param();
+            self.arg();
+            self.consume_trivia();
+        } else {
+            self.advance_with_error("argument");
             self.consume_trivia();
         }
         self.close(mark, TreeKind::Arg);

@@ -105,6 +105,16 @@ pub enum TreeKind {
     ArgList,
     /// An argument in an argument list.
     Arg,
+    /// A class's superclass.
+    SuperClass,
+    /// A for statement's initializer.
+    ForStmtInitializer,
+    /// A for statement's condition.
+    ForStmtCondition,
+    /// A for statement's increment.
+    ForStmtIncrement,
+    /// A while statement's condition.
+    WhileStmtCondition,
 
     // Error trees.
     /// The parser has encountered an error.
@@ -234,6 +244,11 @@ impl TreeKind {
             TreeKind::ExprBinaryBangEqual => "a binary inequality",
             TreeKind::ExprBinaryAnd => "a binary and",
             TreeKind::ExprBinaryOr => "a binary or",
+            TreeKind::SuperClass => "a super class",
+            TreeKind::ForStmtInitializer => "a for statement initializer",
+            TreeKind::ForStmtCondition => "a for statement condition",
+            TreeKind::ForStmtIncrement => "a for statement increment",
+            TreeKind::WhileStmtCondition => "a while statement condition",
         }
     }
 }

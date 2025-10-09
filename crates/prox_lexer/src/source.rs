@@ -73,6 +73,15 @@ impl<'src> SourceCode<'src> {
             .unwrap_or(max_line);
         start..end
     }
+
+    /// Get the span of the entire source.
+    #[must_use]
+    pub const fn get_span(&self) -> Span {
+        Span {
+            start: 0,
+            length: self.text.len(),
+        }
+    }
 }
 
 /// Represents a source character.

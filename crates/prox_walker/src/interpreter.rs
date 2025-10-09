@@ -1,8 +1,11 @@
 use crate::{
     environment::SharedEnvironment,
+    error::{RuntimeError, RuntimeErrorKind},
+    io::IoContext,
     value::{Function, FunctionKind, Value},
 };
 use core::default;
+use core::ops;
 use prox_interner::Symbol;
 use prox_parser::{
     Span,
@@ -13,120 +16,118 @@ use std::sync::Arc;
 
 macro_rules! convert_node {
     ($index:expr) => {
-        NodeIndex::new($index).ok_or(InterpreterError::InvalidNode)?
+        NodeIndex::new($index).ok_or(RuntimeError {
+            kind: RuntimeErrorKind::NullNode,
+            span: Span {
+                start: 0,
+                length: 1,
+            },
+        })?
     };
 }
 
+/// A resolved AST.
 pub struct ResolvedAst {
-    pub(crate) ast: Ast,
-    pub(crate) resolution: ResolutionMap,
+    /// An AST.
+    pub ast: Ast,
+    /// The variable resolutions.
+    pub resolution: ResolutionMap,
 }
 
-impl ResolvedAst {
-    fn resolve(&self, symbol: Symbol) -> Option<&str> {
-        self.ast.resolve(symbol)
-    }
+impl ops::Deref for ResolvedAst {
+    type Target = Ast;
 
-    fn span(&self, index: NodeIndex) -> Span {
-        self.ast.span(index)
-    }
-
-    fn data(&self, index: NodeIndex) -> NodeData {
-        self.ast.data(index)
-    }
-
-    fn tag(&self, index: NodeIndex) -> NodeTag {
-        self.ast.tag(index)
-    }
-
-    fn fn_decl_extra(&self, index: NodeIndex) -> (bool, u32, &[u32]) {
-        self.ast.fn_decl_extra(index)
-    }
-
-    fn if_extra(&self, index: NodeIndex) -> Option<u32> {
-        self.ast.if_extra(index)
-    }
-
-    fn extra_data_slice(&self, index: NodeIndex) -> &[u32] {
-        self.ast.extra_data_slice(index)
+    fn deref(&self) -> &Self::Target {
+        &self.ast
     }
 }
 
+/// The control flow after the execution of a statement.
 #[derive(Debug)]
 enum ControlFlow {
+    /// Continue to next statement.
     Normal,
-    Expression(Value),
+    /// Return a value out from a function scope.
     Return(Value),
 }
 
-#[derive(Debug)]
-pub enum InterpreterError {
-    InvalidNode,
-    InvalidAccess,
-    InvalidCallee,
-    InvalidArgumentCount,
-    InvalidStatement,
-    InvalidExpr,
-}
-
+/// The tree walk interpreter.
 pub struct Interpreter;
 
 impl Interpreter {
-    pub fn run(&mut self, environment: &mut SharedEnvironment, ast: ResolvedAst) {
-        let root = ast.ast.root();
-        let value = self
-            .visit_stmt(environment, &ast, root)
-            .expect("encountered null node");
-        println!("{value:?}");
+    /// Interpret a program given as a resolved AST and an environment.
+    pub fn run(
+        &mut self,
+        context: &mut impl IoContext,
+        environment: &mut SharedEnvironment,
+        ast: ResolvedAst,
+    ) -> Result<(), RuntimeError> {
+        // The root node.
+        let root = ast.root();
+
+        match self.visit_stmt(context, environment, &ast, root) {
+            Ok(ControlFlow::Normal) => Ok(()),
+            Ok(ControlFlow::Return(_)) => Err(RuntimeError {
+                kind: RuntimeErrorKind::ReturnFromNonFunction,
+                span: ast.span(ast.root()),
+            }),
+            Err(err) => Err(err),
+        }
     }
 
     /// Visit a statement.
+    ///
+    /// This will error if the given node index is an expression.
     fn visit_stmt(
         &mut self,
+        context: &mut impl IoContext,
         environment: &mut SharedEnvironment,
         ast: &ResolvedAst,
         index: NodeIndex,
-    ) -> Result<ControlFlow, InterpreterError> {
+    ) -> Result<ControlFlow, RuntimeError> {
         let tag = ast.tag(index);
-        println!("TAG = {tag:?}");
         match tag {
-            NodeTag::Program => self.visit_program(environment, ast, index),
-            NodeTag::Block => self.visit_block(environment, ast, index),
+            NodeTag::Program => self.visit_program(context, environment, ast, index),
+            NodeTag::Block => self.visit_block(context, environment, ast, index),
             NodeTag::StmtFnDecl => self.visit_fn_decl(environment, ast, index),
             NodeTag::StmtVarDecl => todo!(),
             NodeTag::StmtClassDecl => todo!(),
-            NodeTag::If => self.visit_if(environment, ast, index),
-            NodeTag::Return => self.visit_return(environment, ast, index),
-            NodeTag::Print => self.visit_print(environment, ast, index),
+            NodeTag::If => self.visit_if(context, environment, ast, index),
+            NodeTag::Return => self.visit_return(context, environment, ast, index),
+            NodeTag::Print => self.visit_print(context, environment, ast, index),
             NodeTag::For => todo!(),
             NodeTag::While => todo!(),
             NodeTag::ExprStmt => todo!(),
-            NodeTag::Error => todo!(),
             NodeTag::Ident
             | NodeTag::Number
             | NodeTag::Nil
             | NodeTag::Group
             | NodeTag::SuperMethod
+            | NodeTag::Error
             | NodeTag::FieldGet
             | NodeTag::FieldSet
             | NodeTag::Boolean
             | NodeTag::Unary
             | NodeTag::Assignment
             | NodeTag::Binary
-            | NodeTag::Call => Err(InterpreterError::InvalidStatement),
+            | NodeTag::Call => Err(RuntimeError {
+                kind: RuntimeErrorKind::InvalidStatement,
+                span: ast.span(index),
+            }),
         }
     }
 
     /// Visit program.
     fn visit_program(
         &mut self,
+        context: &mut impl IoContext,
         environment: &mut SharedEnvironment,
         ast: &ResolvedAst,
         index: NodeIndex,
-    ) -> Result<ControlFlow, InterpreterError> {
+    ) -> Result<ControlFlow, RuntimeError> {
         let extra_data = ast.extra_data_slice(index);
         for stmt_index in extra_data.iter().copied() {
-            self.visit_stmt(environment, ast, convert_node!(stmt_index))?;
+            self.visit_stmt(context, environment, ast, convert_node!(stmt_index))?;
         }
         Ok(ControlFlow::Normal)
     }
@@ -134,14 +135,15 @@ impl Interpreter {
     /// Visit block.
     fn visit_block(
         &mut self,
+        context: &mut impl IoContext,
         environment: &mut SharedEnvironment,
         ast: &ResolvedAst,
         index: NodeIndex,
-    ) -> Result<ControlFlow, InterpreterError> {
+    ) -> Result<ControlFlow, RuntimeError> {
         let extra_data = ast.extra_data_slice(index);
         for stmt_index in extra_data.iter().copied() {
             let ControlFlow::Return(value) =
-                self.visit_stmt(environment, ast, convert_node!(stmt_index))?
+                self.visit_stmt(context, environment, ast, convert_node!(stmt_index))?
             else {
                 continue;
             };
@@ -156,7 +158,7 @@ impl Interpreter {
         environment: &mut SharedEnvironment,
         ast: &ResolvedAst,
         index: NodeIndex,
-    ) -> Result<ControlFlow, InterpreterError> {
+    ) -> Result<ControlFlow, RuntimeError> {
         let data = ast.data(index);
         let name = Symbol::from(data.symbol());
         let (is_method, block, parameters) = ast.fn_decl_extra(index);
@@ -176,53 +178,53 @@ impl Interpreter {
     /// Visit print.
     fn visit_print(
         &mut self,
+        context: &mut impl IoContext,
         environment: &mut SharedEnvironment,
         ast: &ResolvedAst,
         index: NodeIndex,
-    ) -> Result<ControlFlow, InterpreterError> {
-        let value_node = ast
-            .data(index)
-            .left()
-            .ok_or(InterpreterError::InvalidNode)?;
-        let value = self.visit_expr(environment, ast, value_node)?;
+    ) -> Result<ControlFlow, RuntimeError> {
+        let value_node = ast.data(index).left().unwrap();
+        let value = self.visit_expr(context, environment, ast, value_node)?;
 
-        println!("PRINT: {value}");
+        let _ = writeln!(context, "{value}").unwrap();
         Ok(ControlFlow::Normal)
     }
 
     /// Visit return.
     fn visit_return(
         &mut self,
+        context: &mut impl IoContext,
         environment: &mut SharedEnvironment,
         ast: &ResolvedAst,
         index: NodeIndex,
-    ) -> Result<ControlFlow, InterpreterError> {
+    ) -> Result<ControlFlow, RuntimeError> {
         let Some(value_node) = ast.data(index).left() else {
             return Ok(ControlFlow::Return(Value::Nil));
         };
 
-        let value = self.visit_expr(environment, ast, value_node)?;
+        let value = self.visit_expr(context, environment, ast, value_node)?;
         Ok(ControlFlow::Return(value))
     }
 
     /// Visit if.
     fn visit_if(
         &mut self,
+        context: &mut impl IoContext,
         environment: &mut SharedEnvironment,
         ast: &ResolvedAst,
         index: NodeIndex,
-    ) -> Result<ControlFlow, InterpreterError> {
+    ) -> Result<ControlFlow, RuntimeError> {
         let data = ast.data(index);
-        let condition = data.right().ok_or(InterpreterError::InvalidNode)?;
+        let condition = data.right().unwrap();
 
-        let flag = self.visit_expr(environment, ast, condition)?;
+        let flag = self.visit_expr(context, environment, ast, condition)?;
 
         if flag.truthy() {
             let then_clause = convert_node!(data.middle());
-            self.visit_stmt(environment, ast, then_clause)
+            self.visit_stmt(context, environment, ast, then_clause)
         } else if let Some(else_clause) = ast.if_extra(index) {
             let else_clause = convert_node!(else_clause);
-            self.visit_stmt(environment, ast, else_clause)
+            self.visit_stmt(context, environment, ast, else_clause)
         } else {
             Ok(ControlFlow::Normal)
         }
@@ -234,16 +236,20 @@ impl Interpreter {
     /// Visit an expression.
     fn visit_expr(
         &mut self,
+        context: &mut impl IoContext,
         environment: &mut SharedEnvironment,
         ast: &ResolvedAst,
         index: NodeIndex,
-    ) -> Result<Value, InterpreterError> {
+    ) -> Result<Value, RuntimeError> {
         let tag = ast.tag(index);
-        println!("EXPR TAG= {tag:?} @ {index:?}");
+        tracing::debug!(
+            "Visiting {tag:?} expression with data = {:?}...",
+            ast.data(index)
+        );
         match tag {
             NodeTag::Unary => todo!(),
-            NodeTag::Binary => self.visit_binary(environment, ast, index),
-            NodeTag::Call => self.visit_call(environment, ast, index),
+            NodeTag::Binary => self.visit_binary(context, environment, ast, index),
+            NodeTag::Call => self.visit_call(context, environment, ast, index),
             NodeTag::Group => todo!(),
             NodeTag::Assignment => todo!(),
             NodeTag::SuperMethod => todo!(),
@@ -254,16 +260,15 @@ impl Interpreter {
             NodeTag::Boolean => todo!(),
             NodeTag::Nil => Ok(Value::Nil),
             NodeTag::Error => todo!(),
-            _ => Err(InterpreterError::InvalidExpr),
+            _ => Err(RuntimeError {
+                kind: RuntimeErrorKind::InvalidExpr,
+                span: ast.span(index),
+            }),
         }
     }
 
     /// Visit a number.
-    fn visit_number(
-        &mut self,
-        ast: &ResolvedAst,
-        index: NodeIndex,
-    ) -> Result<Value, InterpreterError> {
+    fn visit_number(&mut self, ast: &ResolvedAst, index: NodeIndex) -> Result<Value, RuntimeError> {
         let number = ast.data(index).number();
         Ok(Value::Number(number))
     }
@@ -274,26 +279,25 @@ impl Interpreter {
         environment: &mut SharedEnvironment,
         ast: &ResolvedAst,
         index: NodeIndex,
-    ) -> Result<Value, InterpreterError> {
-        let value = self
-            .read_variable(environment, ast, index)
-            .ok_or(InterpreterError::InvalidAccess)?;
+    ) -> Result<Value, RuntimeError> {
+        let value = self.read_variable(environment, ast, index).unwrap();
         Ok(value)
     }
 
     /// Visit a binary expression.
     fn visit_binary(
         &mut self,
+        context: &mut impl IoContext,
         environment: &mut SharedEnvironment,
         ast: &ResolvedAst,
         index: NodeIndex,
-    ) -> Result<Value, InterpreterError> {
+    ) -> Result<Value, RuntimeError> {
         let data = ast.data(index);
-        let lhs = data.left().ok_or(InterpreterError::InvalidNode)?;
-        let rhs = data.right().ok_or(InterpreterError::InvalidNode)?;
+        let lhs = data.left().unwrap();
+        let rhs = data.right().unwrap();
 
-        let lhs = self.visit_expr(environment, ast, lhs)?;
-        let rhs = self.visit_expr(environment, ast, rhs)?;
+        let lhs = self.visit_expr(context, environment, ast, lhs)?;
+        let rhs = self.visit_expr(context, environment, ast, rhs)?;
 
         let op = BinaryOp::try_from(data.middle()).expect("binary op is invalid.");
         let value = match op {
@@ -316,15 +320,20 @@ impl Interpreter {
     /// Visit call.
     fn visit_call(
         &mut self,
+        context: &mut impl IoContext,
         outer_environment: &mut SharedEnvironment,
         ast: &ResolvedAst,
         index: NodeIndex,
-    ) -> Result<Value, InterpreterError> {
+    ) -> Result<Value, RuntimeError> {
         let callee_node = convert_node!(ast.data(index).middle());
-        let callee = self.visit_expr(outer_environment, ast, callee_node)?;
+        let callee = self.visit_expr(context, outer_environment, ast, callee_node)?;
 
         let Value::Function(func) = callee else {
-            return Err(InterpreterError::InvalidCallee);
+            let span = ast.span(index);
+            return Err(RuntimeError {
+                kind: RuntimeErrorKind::InvalidCallee,
+                span,
+            });
         };
 
         // Set up scope
@@ -335,7 +344,11 @@ impl Interpreter {
 
         // Check that the argument list is the same length as the parameter list.
         if arguments.len() != func.parameters.len() {
-            return Err(InterpreterError::InvalidArgumentCount);
+            let span = ast.span(index);
+            return Err(RuntimeError {
+                kind: RuntimeErrorKind::InvalidArgumentCount,
+                span,
+            });
         }
 
         // Define the arguments in the function scope
@@ -344,13 +357,12 @@ impl Interpreter {
                 .iter()
                 .map(|arg| NodeIndex::new(*arg).expect("invalid node.")),
         ) {
-            let arg_value = self.visit_expr(outer_environment, ast, arg_index)?;
-            println!("{symbol:?} <- {arg_value}");
+            let arg_value = self.visit_expr(context, outer_environment, ast, arg_index)?;
             inner_scope.declare(*symbol, arg_value);
         }
 
         // TODO(pavyamsiri): Handle constructors.
-        match self.visit_stmt(&mut inner_scope, ast, func.body)? {
+        match self.visit_stmt(context, &mut inner_scope, ast, func.body)? {
             ControlFlow::Return(value) => Ok(value),
             _ => {
                 panic!("no return?");
@@ -368,7 +380,6 @@ impl Interpreter {
     ) -> Option<Value> {
         let name = ast.data(index).symbol();
         let span = ast.span(index);
-        println!("accessing {name:?} at {span:?}");
         let ident = ResolvedIdent { symbol: name, span };
         match ast.resolution.get(&ident) {
             Some(depth) => environment.access_at(&name, *depth),

@@ -475,8 +475,7 @@ impl Ast {
 
     /// Get the root.
     #[must_use]
-    pub fn root(&self) -> NodeIndex {
-        println!("interner = {:#?}", self.strings);
+    pub const fn root(&self) -> NodeIndex {
         self.root
     }
 

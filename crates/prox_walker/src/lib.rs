@@ -1,14 +1,18 @@
-mod environment;
-mod interpreter;
+pub mod environment;
+pub mod error;
+pub mod interpreter;
+pub mod io;
 mod value;
 
 use crate::{
     environment::SharedEnvironment,
+    error::RuntimeError,
     interpreter::{Interpreter, ResolvedAst},
+    io::{IoContext, StdoutContext},
 };
-use prox_parser::{cst::parser::Parser, cst_to_ast::CstToAstConverter, resolver::Resolver};
+use prox_parser::{cst::Parser, cst_to_ast::CstToAstConverter, resolver::Resolver};
 
-pub fn run(source: &str) {
+pub fn run(source: &str, context: &mut impl IoContext) -> Result<(), RuntimeError> {
     let cst = Parser::new(source).parse();
     let resolver = Resolver::default();
     let resolved_cst = resolver.resolve(cst).expect("resolution failed");
@@ -21,17 +25,18 @@ pub fn run(source: &str) {
     let mut interpreter = Interpreter;
     let mut environment = SharedEnvironment::default();
     interpreter.run(
+        context,
         &mut environment,
         ResolvedAst {
             ast,
             resolution: resolved_cst.resolution,
         },
-    );
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::run;
+    use crate::{io::BufferContext, run};
 
     #[test]
     fn walk() {
@@ -43,6 +48,9 @@ fun fib(n) {
 
 print fib(12);
 ";
-        run(code);
+        let mut buffer = BufferContext::new();
+        let _ = run(code, &mut buffer).expect("code should not result in runtime errors.");
+
+        assert_eq!(&buffer.flush(), "144\n", "successful execution.");
     }
 }

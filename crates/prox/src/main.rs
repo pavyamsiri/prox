@@ -1,10 +1,11 @@
-use ariadne::LabelAttach;
-use ariadne::{Color, Config, Label, Report as ErrorReport, ReportKind, Source};
 use clap::Parser as CLParser;
 use color_eyre::Report;
-use prox_lexer::span::Span;
-use prox_lexer::token::Token;
-use prox_parser::cst::parser::{ParseError, Parser};
+use prox_errors::ReportableError;
+use prox_parser::cst::Parser;
+use prox_parser::cst_to_ast::CstToAstConverter;
+use prox_parser::resolver::{ResolvedCst, Resolver};
+use prox_walker::environment::SharedEnvironment;
+use prox_walker::interpreter::{Interpreter, ResolvedAst};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -21,8 +22,12 @@ pub struct CLArgs {
 
 #[derive(Debug, clap::Subcommand)]
 pub enum CLCommand {
+    /// Tokenize a file.
     Tokenize { path: PathBuf },
+    /// Parse a file into a CST.
     Parse { path: PathBuf },
+    /// Interpret a file using a tree-walk interpreter.
+    Walk { path: PathBuf },
 }
 
 fn main() -> ExitCode {
@@ -50,6 +55,13 @@ fn fallable_main() -> Result<ExitCode, Report> {
             eprintln!("Parsing {}...", path.display());
             let src = fs::read_to_string(&path)?;
             if !parse(&src, &path) {
+                return Ok(ExitCode::from(FRONTEND_ERROR));
+            }
+        }
+        CLCommand::Walk { path } => {
+            eprintln!("Walking {}...", path.display());
+            let src = fs::read_to_string(&path)?;
+            if !walk(&src, &path) {
                 return Ok(ExitCode::from(FRONTEND_ERROR));
             }
         }
@@ -81,193 +93,58 @@ fn parse(text: &str, path: &Path) -> bool {
     let path = &path.to_string_lossy();
 
     let parser = Parser::new(text);
-    let parse_tree = parser.parse();
+    let cst = parser.parse();
+    let resolver = Resolver::default();
+    let Err(errors) = resolver.resolve(cst) else {
+        return true;
+    };
+
     let mut buffer = String::new();
 
-    for error in parse_tree.errors {
-        match error {
-            ParseError::Expected {
-                actual,
-                context,
-                expected,
-            } => {
-                ErrorReport::build(ReportKind::Error, (path, actual.span.range()))
-                    .with_message(format!("Expected a {expected}"))
-                    .with_config(Config::default().with_compact(true))
-                    .with_label(
-                        Label::new((path, actual.span.range()))
-                            .with_color(Color::Yellow)
-                            .with_message(format!(
-                                "but found {} while parsing {context}",
-                                actual.tag.name()
-                            )),
-                    )
-                    .finish()
-                    .print((path, Source::from(text)))
-                    .expect("not handling io errors.");
-            }
-            ParseError::InvalidAssignment { lvalue, value } => {
-                format_invalid_assignment(path, text, lvalue, value);
-            }
-            ParseError::MissingDotAfterSuper {
-                super_token,
-                actual,
-            } => {
-                format_missing_super_dot(path, text, super_token, actual);
-            }
-            ParseError::MissingSuperMethod {
-                super_token,
-                actual,
-            } => {
-                format_missing_super_method(path, text, super_token, actual);
-            }
-            ParseError::TooManyArguments {
-                list_start,
-                list_end,
-            } => format_too_many_arguments(path, text, list_start, list_end),
-            ParseError::TooManyParameters {
-                list_start,
-                list_end,
-            } => format_too_many_parameters(path, text, list_start, list_end),
-            ParseError::MissingComma { context, actual } => {
-                format_missing_comma(path, text, context, actual);
-            }
-            ParseError::InvalidSuperclass { class_decl, actual } => {
-                format_invalid_superclass(path, text, class_decl, actual);
-            }
-        }
+    for error in errors {
+        error.report(&mut buffer, path, text);
     }
+
+    println!("{buffer}");
 
     false
 }
 
-fn format_missing_super_method(path: &str, text: &str, super_token: Token, actual: Token) {
-    let total_span = super_token.span.merge(actual.span);
-    ErrorReport::build(ReportKind::Error, (path, total_span.range()))
-        .with_message("Missing a method name after super".to_owned())
-        .with_config(Config::default().with_compact(true))
-        .with_label(
-            Label::new((path, super_token.span.range()))
-                .with_color(Color::Yellow)
-                .with_message("used super here".to_owned())
-                .with_order(1),
-        )
-        .with_label(
-            Label::new((path, actual.span.range()))
-                .with_color(Color::Red)
-                .with_message("without a method name".to_owned())
-                .with_order(0),
-        )
-        .finish()
-        .print((path, Source::from(text)))
-        .expect("not handling io errors.");
-}
+fn walk(text: &str, path: &Path) -> bool {
+    let path = &path.to_string_lossy();
+    let cst = Parser::new(text).parse();
+    let resolver = Resolver::default();
+    let resolved_cst = match resolver.resolve(cst) {
+        Ok(cst) => cst,
+        Err(errors) => {
+            let mut buffer = String::new();
 
-fn format_missing_super_dot(path: &str, text: &str, super_token: Token, actual: Token) {
-    let total_span = super_token.span.merge(actual.span);
-    ErrorReport::build(ReportKind::Error, (path, total_span.range()))
-        .with_message("Missing a dot after super".to_owned())
-        .with_config(Config::default().with_compact(true))
-        .with_label(
-            Label::new((path, super_token.span.range()))
-                .with_color(Color::Yellow)
-                .with_message("used super here".to_owned())
-                .with_order(1),
-        )
-        .with_label(
-            Label::new((path, actual.span.range()))
-                .with_color(Color::Red)
-                .with_message("without a dot".to_owned())
-                .with_order(0),
-        )
-        .finish()
-        .print((path, Source::from(text)))
-        .expect("not handling io errors.");
-}
+            for error in errors {
+                error.report(&mut buffer, path, text);
+            }
 
-fn format_invalid_assignment(path: &str, text: &str, lvalue: Span, value: Span) {
-    let total_span = lvalue.merge(value);
-    ErrorReport::build(ReportKind::Error, (path, total_span.range()))
-        .with_message("Invalid assignment target".to_owned())
-        .with_config(Config::default().with_label_attach(LabelAttach::Middle))
-        .with_label(
-            Label::new((path, value.range()))
-                .with_color(Color::Yellow)
-                .with_message("tried assigning this value".to_owned())
-                .with_order(0),
-        )
-        .with_label(
-            Label::new((path, lvalue.range()))
-                .with_color(Color::Red)
-                .with_message("to an invalid lvalue")
-                .with_order(1),
-        )
-        .finish()
-        .print((path, Source::from(text)))
-        .expect("not handling io errors.");
-}
+            println!("{buffer}");
+            return false;
+        }
+    };
 
-fn format_too_many_arguments(path: &str, text: &str, list_start: Token, list_end: Token) {
-    let total_span = list_start.span.merge(list_end.span);
-    ErrorReport::build(ReportKind::Error, (path, total_span.range()))
-        .with_message("Called with more than 255 arguments.".to_owned())
-        .with_config(Config::default())
-        .with_label(
-            Label::new((path, total_span.range()))
-                .with_color(Color::Red)
-                .with_message("too many arguments".to_owned()),
-        )
-        .finish()
-        .print((path, Source::from(text)))
-        .expect("not handling io errors.");
-}
+    let converter = CstToAstConverter::with_interner(resolved_cst.interner);
 
-fn format_too_many_parameters(path: &str, text: &str, list_start: Token, list_end: Token) {
-    let total_span = list_start.span.merge(list_end.span);
-    ErrorReport::build(ReportKind::Error, (path, total_span.range()))
-        .with_message("Function with more than 255 parameters.".to_owned())
-        .with_config(Config::default())
-        .with_label(
-            Label::new((path, total_span.range()))
-                .with_color(Color::Red)
-                .with_message("too many parameters".to_owned()),
-        )
-        .finish()
-        .print((path, Source::from(text)))
-        .expect("not handling io errors.");
-}
+    let ast = converter
+        .convert(&resolved_cst.source, &resolved_cst.root)
+        .expect("conversion should be successful");
 
-fn format_missing_comma(path: &str, text: &str, context: &'static str, actual: Token) {
-    ErrorReport::build(ReportKind::Error, (path, actual.span.range()))
-        .with_message("Perhaps you missed a comma?".to_owned())
-        .with_config(Config::default())
-        .with_label(
-            Label::new((path, actual.span.range()))
-                .with_color(Color::Red)
-                .with_message(format!("missing comma here when parsing a {context} list")),
-        )
-        .finish()
-        .print((path, Source::from(text)))
-        .expect("not handling io errors.");
-}
+    let mut context = prox_walker::io::StdoutContext;
+    let mut interpreter = Interpreter;
+    let mut environment = SharedEnvironment::default();
+    interpreter.run(
+        &mut context,
+        &mut environment,
+        ResolvedAst {
+            ast,
+            resolution: resolved_cst.resolution,
+        },
+    );
 
-fn format_invalid_superclass(path: &str, text: &str, class_decl: Span, actual: Span) {
-    ErrorReport::build(ReportKind::Error, (path, actual.range()))
-        .with_message("Superclass must be an identifier.".to_owned())
-        .with_config(Config::default())
-        .with_label(
-            Label::new((path, actual.range()))
-                .with_color(Color::Red)
-                .with_message("is not an identifier.".to_owned())
-                .with_order(0),
-        )
-        .with_label(
-            Label::new((path, class_decl.range()))
-                .with_color(Color::Yellow)
-                .with_message("class declared here".to_owned())
-                .with_order(1),
-        )
-        .finish()
-        .print((path, Source::from(text)))
-        .expect("not handling io errors.");
+    true
 }

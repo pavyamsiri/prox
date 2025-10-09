@@ -8,7 +8,6 @@ use crate::{
             Program, Return, Statement, VarDecl,
         },
     },
-    resolver::ResolvedCst,
 };
 use core::default;
 use prox_interner::Interner;
@@ -76,7 +75,6 @@ impl CstToAstConverter {
         source: &SourceCode<'_>,
         decl: &ClassDecl,
     ) -> Option<(NodeIndex, Span)> {
-        println!("{decl:?}");
         todo!();
     }
 
@@ -90,7 +88,6 @@ impl CstToAstConverter {
         let name = source.get_lexeme(decl.name()?.span())?;
         let name_sym = self.builder.intern(name);
 
-        println!("{name_sym:?}");
         let parameters: Vec<_> = decl
             .param_list()
             .filter_map(|param| param.name())
@@ -334,7 +331,7 @@ mod tests {
 
     #[test]
     fn create_ast() {
-        use crate::{cst::parser::Parser, cst_to_ast::CstToAstConverter, resolver::Resolver};
+        use crate::{cst::Parser, cst_to_ast::CstToAstConverter, resolver::Resolver};
         let text = "
 fun fib(n) {
   if (n < 2) return n;

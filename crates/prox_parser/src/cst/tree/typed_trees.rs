@@ -182,6 +182,7 @@ generate_node_ref_cast!(Program, TreeKind::Program);
 generate_node_ref_cast!(FnDecl, TreeKind::StmtFnDecl);
 generate_node_ref_cast!(VarDecl, TreeKind::StmtVarDecl);
 generate_node_ref_cast!(ClassDecl, TreeKind::StmtClassDecl);
+generate_node_ref_cast!(MethodDecl, TreeKind::StmtMethodDecl);
 // Statements
 generate_node_ref_cast!(Block, TreeKind::StmtBlock);
 generate_node_ref_cast!(If, TreeKind::StmtIf);
@@ -196,6 +197,11 @@ generate_node_ref_cast!(Param, TreeKind::Param);
 generate_node_ref_cast!(ArgList, TreeKind::ArgList);
 generate_node_ref_cast!(Arg, TreeKind::Arg);
 generate_node_ref_cast!(VarDeclInitializer, TreeKind::VarDeclInitializer);
+generate_node_ref_cast!(ForStmtInitializer, TreeKind::ForStmtInitializer);
+generate_node_ref_cast!(ForStmtCondition, TreeKind::ForStmtCondition);
+generate_node_ref_cast!(ForStmtIncrement, TreeKind::ForStmtIncrement);
+generate_node_ref_cast!(WhileStmtCondition, TreeKind::WhileStmtCondition);
+generate_node_ref_cast!(SuperClass, TreeKind::SuperClass);
 // Expressions
 generate_node_ref_cast!(ExprMul, TreeKind::ExprBinaryStar);
 generate_node_ref_cast!(ExprDiv, TreeKind::ExprBinarySlash);
@@ -322,6 +328,49 @@ impl<'node> DeclarationOrStatement<'node> {
     }
 }
 
+impl<'tree> ClassDecl<'tree> {
+    /// Return the name of the class if it is there.
+    #[must_use]
+    pub fn name(&self) -> Option<Ident> {
+        self.0.children.iter().find_map(|node| match *node {
+            Node::Token(Token {
+                tag: TokenKind::Ident,
+                ref span,
+            }) => Some(Ident(*span)),
+            _ => None,
+        })
+    }
+
+    /// Return the super class if it exists.
+    pub fn super_class(&self) -> Option<SuperClass<'tree>> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(SuperClass::ref_cast)
+    }
+
+    /// Return the methods if they exist.
+    pub fn methods(&self) -> impl Iterator<Item = MethodDecl<'tree>> + use<'tree> {
+        self.0.children.iter().filter_map(|child| {
+            let tree = child.tree()?;
+            MethodDecl::ref_cast(tree)
+        })
+    }
+
+    generate_get_span!(TokenKind::KeywordClass, TokenKind::RightBrace);
+}
+
+impl SuperClass<'_> {
+    /// Return the name if it exists.
+    #[must_use]
+    pub fn name(&self) -> Option<Ident> {
+        self.0.children.iter().find_map(|child| {
+            let tok = child.token()?;
+            Ident::ref_cast(tok)
+        })
+    }
+}
 impl<'node> FnDecl<'node> {
     /// Return the name of the function if it is there.
     #[must_use]
@@ -355,6 +404,39 @@ impl<'node> FnDecl<'node> {
     }
 
     generate_get_token!(fn_keyword, TokenKind::KeywordFun);
+}
+
+impl<'node> MethodDecl<'node> {
+    /// Return the name of the method if it is there.
+    #[must_use]
+    pub fn name(&self) -> Option<Ident> {
+        self.0.children.iter().find_map(|node| match *node {
+            Node::Token(Token {
+                tag: TokenKind::Ident,
+                ref span,
+            }) => Some(Ident(*span)),
+            _ => None,
+        })
+    }
+
+    /// Return an iterator over the parameters of the method.
+    pub fn param_list(&self) -> impl Iterator<Item = Param<'node>> + use<'node> {
+        self.0
+            .children
+            .iter()
+            .find_map(|child| child.tree().and_then(ParamList::ref_cast))
+            .into_iter()
+            .flat_map(|list| list.parameters())
+    }
+
+    /// Return the body of the method if it is there.
+    #[must_use]
+    pub fn body(&self) -> Option<Block<'node>> {
+        self.0
+            .children
+            .iter()
+            .find_map(|child| child.tree().and_then(Block::ref_cast))
+    }
 }
 
 impl<'node> ParamList<'node> {
@@ -449,6 +531,32 @@ impl<'tree> Return<'tree> {
     generate_get_span!(TokenKind::KeywordReturn, TokenKind::Semicolon);
 }
 
+impl<'tree> ExprStmt<'tree> {
+    /// Return the expresssion value if it exists.
+    pub fn value(&self) -> Option<Expr<'tree>> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(Expr::ref_cast)
+    }
+
+    generate_get_span!(
+        TokenKind::NumericLiteral
+            | TokenKind::KeywordTrue
+            | TokenKind::KeywordFalse
+            | TokenKind::KeywordNil
+            | TokenKind::Ident
+            | TokenKind::StringLiteral
+            | TokenKind::KeywordThis
+            | TokenKind::KeywordSuper
+            | TokenKind::LeftParenthesis
+            | TokenKind::Bang
+            | TokenKind::Minus,
+        TokenKind::Semicolon
+    );
+}
+
 impl<'tree> Print<'tree> {
     /// Return the return value if it exists.
     pub fn value(&self) -> Option<Expr<'tree>> {
@@ -460,6 +568,115 @@ impl<'tree> Print<'tree> {
     }
 
     generate_get_span!(TokenKind::KeywordPrint, TokenKind::Semicolon);
+}
+
+impl<'tree> For<'tree> {
+    /// Return the initializer if it exists.
+    pub fn initializer(&self) -> Option<ForStmtInitializer<'tree>> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(ForStmtInitializer::ref_cast)
+    }
+
+    /// Return the condition if it exists.
+    pub fn condition(&self) -> Option<ForStmtCondition<'tree>> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(ForStmtCondition::ref_cast)
+    }
+
+    /// Return the increment if it exists.
+    pub fn increment(&self) -> Option<ForStmtIncrement<'tree>> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(ForStmtIncrement::ref_cast)
+    }
+
+    /// Return the body of the for statement if it is there.
+    #[must_use]
+    pub fn body(&self) -> Option<Statement<'tree>> {
+        self.0
+            .children
+            .iter()
+            .find_map(|child| child.tree().and_then(Statement::ref_cast))
+    }
+}
+
+impl<'tree> ForStmtInitializer<'tree> {
+    /// Return the variable declaration if it exists.
+    pub fn decl(&self) -> Option<VarDecl<'tree>> {
+        self.0
+            .children
+            .iter()
+            .find_map(|child| child.tree().and_then(VarDecl::ref_cast))
+    }
+
+    /// Return the expression statement if it exists.
+    pub fn expr_stmt(&self) -> Option<ExprStmt<'tree>> {
+        self.0
+            .children
+            .iter()
+            .find_map(|child| child.tree().and_then(ExprStmt::ref_cast))
+    }
+}
+
+impl<'tree> ForStmtCondition<'tree> {
+    /// Return the condition statement if it exists.
+    pub fn value(&self) -> Option<Expr<'tree>> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(Expr::ref_cast)
+    }
+}
+
+impl<'tree> ForStmtIncrement<'tree> {
+    /// Return the increment statement if it exists.
+    pub fn value(&self) -> Option<Expr<'tree>> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(Expr::ref_cast)
+    }
+}
+
+impl<'tree> While<'tree> {
+    /// Return the condition if it exists.
+    pub fn condition(&self) -> Option<WhileStmtCondition<'tree>> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(WhileStmtCondition::ref_cast)
+    }
+
+    /// Return the body of the while statement if it is there.
+    #[must_use]
+    pub fn body(&self) -> Option<Statement<'tree>> {
+        self.0
+            .children
+            .iter()
+            .find_map(|child| child.tree().and_then(Statement::ref_cast))
+    }
+}
+
+impl<'tree> WhileStmtCondition<'tree> {
+    /// Return the condition statement if it exists.
+    pub fn value(&self) -> Option<Expr<'tree>> {
+        self.0
+            .children
+            .iter()
+            .filter_map(|child| child.tree())
+            .find_map(Expr::ref_cast)
+    }
 }
 
 impl<'tree> VarDecl<'tree> {

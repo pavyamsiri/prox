@@ -1,0 +1,12 @@
+[package]
+name = "prox_errors"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+ariadne = { workspace = true }
+
+prox_parser = { workspace = true }
+
+[lints]
+workspace = true

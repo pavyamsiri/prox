@@ -1,3 +1,5 @@
 mod operator;
-pub mod parser;
+mod parser;
 pub mod tree;
+
+pub use parser::{ParseError, ParseResult, Parser};

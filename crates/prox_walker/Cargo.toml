@@ -10,6 +10,7 @@ tracing-subscriber = { workspace = true }
 
 prox_interner = { workspace = true }
 prox_parser = { workspace = true }
+prox_span = { workspace = true }
 
 [lints]
 workspace = true

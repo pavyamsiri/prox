@@ -13,10 +13,10 @@ use core::fmt;
 use core::ops;
 use prox_interner::{Interner, Symbol};
 use prox_parser::{
-    Span,
     ast::{Ast, BinaryOp, NodeIndex, NodeTag, UnaryOp},
     resolver::{ResolutionMap, ResolvedIdent},
 };
+use prox_span::Span;
 
 macro_rules! unwrap_node {
     ($node:expr => $span:expr) => {
@@ -50,6 +50,8 @@ macro_rules! map_node {
 pub struct ResolvedAst {
     /// An AST.
     pub ast: Ast,
+    /// The interner.
+    pub interner: Interner,
     /// The variable resolutions.
     pub resolution: ResolutionMap,
 }
@@ -111,7 +113,7 @@ impl Interpreter {
     ) -> Result<ControlFlow, RuntimeError> {
         let tag = ast.tag(index);
         let mut buffer = String::new();
-        ast.dump(&mut buffer, index).unwrap();
+        ast.dump(&mut buffer, &ast.interner, index).unwrap();
         tracing::debug!("Interpreting {buffer}");
         match tag {
             NodeTag::Program => self.visit_program(context, environment, ast, index),
@@ -441,7 +443,7 @@ impl Interpreter {
         let value_node = unwrap_node!(ast.data(index).left() => span)?;
         let value = self.visit_expr(context, environment, ast, value_node)?;
 
-        writeln!(context, "{}", value.resolve(ast.get_interner())).map_err(|fmt::Error| {
+        writeln!(context, "{}", value.resolve(&ast.interner)).map_err(|fmt::Error| {
             RuntimeError {
                 kind: RuntimeErrorKind::Io,
                 span,
@@ -695,7 +697,7 @@ impl Interpreter {
         let data = ast.data(index);
         let sym = data.symbol();
         // TODO: Add runtime error for string intern mismatch
-        let lexeme = ast.resolve(sym).unwrap();
+        let lexeme = ast.interner.resolve(sym).unwrap();
         Value::String(lexeme.into())
     }
 

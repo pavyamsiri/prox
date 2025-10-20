@@ -1,10 +1,10 @@
 extern crate alloc;
 
-use crate::span::Span;
 use alloc::collections::VecDeque;
 use core::cmp;
 use core::ops;
 use core::str::CharIndices;
+use prox_span::Span;
 
 /// Interface of helper functions to deal with tokens and spans.
 #[derive(Debug, Clone)]
@@ -46,7 +46,7 @@ impl<'src> SourceCode<'src> {
     /// If the span is invalid, the maximum line number is returned.
     #[must_use]
     pub fn get_line(&self, span: &Span) -> ops::Range<usize> {
-        let max_line = self.line_breaks.len() + 1;
+        let max_line = self.get_max_line();
         let range = span.range();
         let create_closure = move |offset: usize| {
             move |rge: &ops::Range<usize>| {
@@ -72,6 +72,12 @@ impl<'src> SourceCode<'src> {
             .ok()
             .unwrap_or(max_line);
         start..end
+    }
+
+    /// Return the largest line number.
+    #[must_use]
+    pub const fn get_max_line(&self) -> usize {
+        self.line_breaks.len() + 1
     }
 
     /// Get the span of the entire source.

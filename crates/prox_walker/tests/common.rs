@@ -25,7 +25,7 @@ fn run_interpreter(text: &str) -> String {
 
     let converter = CstToAstConverter::with_interner(resolved_cst.interner);
 
-    let ast = match converter.convert(&resolved_cst.source, &resolved_cst.root) {
+    let (ast, interner) = match converter.convert(&resolved_cst.source, &resolved_cst.root) {
         Ok(ast) => ast,
         Err(err) => {
             writeln!(&mut buffer, "{err}").unwrap();
@@ -38,15 +38,16 @@ fn run_interpreter(text: &str) -> String {
     let mut ast = ResolvedAst {
         ast,
         resolution: resolved_cst.resolution,
+        interner,
     };
-    let mut environment = SharedEnvironment::with_interner(ast.ast.get_interner_mut());
+    let mut environment = SharedEnvironment::with_interner(&mut ast.interner);
     let res = interpreter.run(&mut context, &mut environment, &ast);
 
     match res {
         Ok(()) => context.flush(),
         Err(err) => {
             let mut flushed_buffer = context.flush();
-            err.format(text, &mut flushed_buffer, ast.ast.get_interner())
+            err.format(text, &mut flushed_buffer, &ast.interner)
                 .unwrap();
             flushed_buffer.push('\n');
             flushed_buffer

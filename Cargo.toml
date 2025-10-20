@@ -6,6 +6,9 @@ members = [
     "crates/prox_interner",
     "crates/prox_walker",
     "crates/prox_errors",
+    "crates/prox_bytecode",
+    "crates/prox_compiler",
+    "crates/prox_span",
 ]
 resolver = "3"
 
@@ -16,10 +19,13 @@ color-eyre = "0.6.5"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
+prox_bytecode = { path = "crates/prox_bytecode" }
+prox_compiler = { path = "crates/prox_compiler" }
 prox_errors = { path = "crates/prox_errors" }
 prox_interner = { path = "crates/prox_interner" }
 prox_lexer = { path = "crates/prox_lexer" }
 prox_parser = { path = "crates/prox_parser" }
+prox_span = { path = "crates/prox_span" }
 prox_walker = { path = "crates/prox_walker" }
 
 [workspace.lints.rust]

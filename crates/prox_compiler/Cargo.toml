@@ -1,14 +1,16 @@
 [package]
-name = "prox_parser"
+name = "prox_compiler"
 version = "0.0.0"
 edition = "2024"
 
 [dependencies]
-tracing = { workspace = true }
-
+prox_bytecode = { workspace = true }
 prox_interner = { workspace = true }
 prox_lexer = { workspace = true }
+prox_parser = { workspace = true }
 prox_span = { workspace = true }
+
+tracing = { workspace = true }
 
 [lints]
 workspace = true

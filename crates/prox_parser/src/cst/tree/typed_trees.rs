@@ -1,8 +1,6 @@
 use super::{Cst, Node, TreeKind};
-use prox_lexer::{
-    span::Span,
-    token::{Token, TokenKind},
-};
+use prox_lexer::token::{Token, TokenKind};
+use prox_span::Span;
 
 /// Unary operations.
 #[repr(u8)]

@@ -1,4 +1,4 @@
-use crate::span::Span;
+use prox_span::Span;
 
 /// A language token.
 #[derive(Debug, Clone, Copy)]

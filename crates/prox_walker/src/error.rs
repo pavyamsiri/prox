@@ -2,7 +2,7 @@
 use core::fmt;
 
 use prox_interner::{Interner, Symbol};
-use prox_parser::Span;
+use prox_span::Span;
 
 /// A runtime error.
 #[derive(Debug)]

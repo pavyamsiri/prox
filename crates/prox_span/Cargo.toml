@@ -1,10 +1,9 @@
 [package]
-name = "prox_lexer"
+name = "prox_span"
 version = "0.0.0"
 edition = "2024"
 
 [dependencies]
-prox_span = { workspace = true }
 
 [lints]
 workspace = true

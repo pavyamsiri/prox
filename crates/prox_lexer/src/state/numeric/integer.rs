@@ -1,8 +1,8 @@
 use crate::source::SourceChar;
-use crate::span::Span;
 use crate::state::numeric::PeriodState;
 use crate::state::{LexerPutBack, LexerTransition, State};
 use crate::token::{Token, TokenKind};
+use prox_span::Span;
 
 /// The state after seeing a digit.
 #[derive(Debug)]

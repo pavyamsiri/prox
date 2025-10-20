@@ -314,6 +314,7 @@ dependencies = [
  "ariadne",
  "clap",
  "color-eyre",
+ "prox_compiler",
  "prox_errors",
  "prox_lexer",
  "prox_parser",
@@ -323,11 +324,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "prox_bytecode"
+version = "0.0.0"
+dependencies = [
+ "prox_interner",
+ "prox_lexer",
+ "prox_span",
+ "tracing",
+]
+
+[[package]]
+name = "prox_compiler"
+version = "0.0.0"
+dependencies = [
+ "prox_bytecode",
+ "prox_interner",
+ "prox_lexer",
+ "prox_parser",
+ "prox_span",
+ "tracing",
+]
+
+[[package]]
 name = "prox_errors"
 version = "0.0.0"
 dependencies = [
  "ariadne",
  "prox_parser",
+ "prox_span",
  "prox_walker",
 ]
 
@@ -338,6 +362,9 @@ version = "0.0.0"
 [[package]]
 name = "prox_lexer"
 version = "0.0.0"
+dependencies = [
+ "prox_span",
+]
 
 [[package]]
 name = "prox_parser"
@@ -345,8 +372,13 @@ version = "0.0.0"
 dependencies = [
  "prox_interner",
  "prox_lexer",
+ "prox_span",
  "tracing",
 ]
+
+[[package]]
+name = "prox_span"
+version = "0.0.0"
 
 [[package]]
 name = "prox_walker"
@@ -354,6 +386,7 @@ version = "0.0.0"
 dependencies = [
  "prox_interner",
  "prox_parser",
+ "prox_span",
  "tracing",
  "tracing-subscriber",
 ]

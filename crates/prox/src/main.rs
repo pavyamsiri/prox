@@ -1,5 +1,6 @@
 use clap::Parser as CLParser;
 use color_eyre::Report;
+use prox_compiler::compile;
 use prox_errors::ReportableError as _;
 use prox_parser::cst::Parser;
 use prox_parser::cst_to_ast::CstToAstConverter;
@@ -29,6 +30,8 @@ pub enum CLCommand {
     Parse { path: PathBuf },
     /// Interpret a file using a tree-walk interpreter.
     Walk { path: PathBuf },
+    /// Compile a file into bytecode and print disassembly.
+    Disassemble { path: PathBuf },
 }
 
 fn main() -> ExitCode {
@@ -63,6 +66,13 @@ fn fallable_main() -> Result<ExitCode, Report> {
             eprintln!("Walking {}...", path.display());
             let src = fs::read_to_string(&path)?;
             if !walk(&src, &path) {
+                return Ok(ExitCode::from(FRONTEND_ERROR));
+            }
+        }
+        CLCommand::Disassemble { path } => {
+            eprintln!("Disassembling {}...", path.display());
+            let src = fs::read_to_string(&path)?;
+            if !disassemble(&src, &path) {
                 return Ok(ExitCode::from(FRONTEND_ERROR));
             }
         }
@@ -133,7 +143,7 @@ fn walk(text: &str, path: &Path) -> bool {
 
     let converter = CstToAstConverter::with_interner(resolved_cst.interner);
 
-    let mut ast = match converter.convert(&resolved_cst.source, &resolved_cst.root) {
+    let (ast, mut interner) = match converter.convert(&resolved_cst.source, &resolved_cst.root) {
         Ok(ast) => ast,
         Err(err) => {
             tracing::error!("{err}");
@@ -143,13 +153,14 @@ fn walk(text: &str, path: &Path) -> bool {
 
     let mut context = StdoutContext;
     let mut interpreter = Interpreter;
-    let mut environment = SharedEnvironment::with_interner(ast.get_interner_mut());
+    let mut environment = SharedEnvironment::with_interner(&mut interner);
     let res = interpreter.run(
         &mut context,
         &mut environment,
         &ResolvedAst {
             ast,
             resolution: resolved_cst.resolution,
+            interner,
         },
     );
 
@@ -162,4 +173,49 @@ fn walk(text: &str, path: &Path) -> bool {
             false
         }
     }
+}
+
+fn disassemble(text: &str, path: &Path) -> bool {
+    tracing::info!("{text}");
+    let path = &path.to_string_lossy();
+    tracing::debug!("Parsing...");
+    let cst = Parser::new(text).parse();
+    let resolver = Resolver::default();
+    tracing::debug!("Resolving...");
+    let resolved_cst = match resolver.resolve(cst) {
+        Ok(cst) => cst,
+        Err(errors) => {
+            let mut buffer = String::new();
+            for error in errors {
+                error.report(&mut buffer, path, text);
+            }
+            println!("{buffer}");
+            return false;
+        }
+    };
+
+    let converter = CstToAstConverter::with_interner(resolved_cst.interner);
+    tracing::debug!("Converting...");
+    let (ast, interner) = match converter.convert(&resolved_cst.source, &resolved_cst.root) {
+        Ok(ast) => ast,
+        Err(err) => {
+            tracing::error!("{err}");
+            return false;
+        }
+    };
+
+    tracing::debug!("Compiling...");
+    let unit = match compile(&ast, interner) {
+        Ok(unit) => unit,
+        Err(_err) => {
+            tracing::warn!("should print error here");
+            return false;
+        }
+    };
+    let mut buffer = String::new();
+    unit.disassemble(&mut buffer, &resolved_cst.source)
+        .expect("not handling io errors.");
+    println!("{buffer}");
+
+    todo!();
 }

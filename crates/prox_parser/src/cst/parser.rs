@@ -10,9 +10,9 @@ use core::{cell, iter};
 use prox_lexer::SourceCode;
 use prox_lexer::{
     Lexer,
-    span::Span,
     token::{Token, TokenKind},
 };
+use prox_span::Span;
 use sets::{
     BINARY_OP_ONLY, DECL_FIRST, EXPR_FIRST, STMT_FIRST, STMT_RECOVERY, expr_first, stmt_first,
 };

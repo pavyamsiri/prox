@@ -1,5 +1,4 @@
 use crate::source::SourceChar;
-use crate::span::Span;
 use crate::state::double::{DoubleCharacterSpec, DoubleCharacterState};
 use crate::state::ident::IdentState;
 use crate::state::numeric::IntegerState;
@@ -8,6 +7,7 @@ use crate::state::string::StringState;
 use crate::state::whitespace::WhitespaceState;
 use crate::state::{LexerPutBack, LexerTransition, State};
 use crate::token::{Token, TokenKind};
+use prox_span::Span;
 
 /// The start state of the lexer state machine.
 #[derive(Debug)]

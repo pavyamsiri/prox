@@ -1,10 +1,8 @@
 use core::convert;
-use core::default;
 use core::fmt;
 use core::num::NonZeroU32;
 use prox_interner::{Interner, Symbol};
-use prox_lexer::span::Span;
-use std::hash;
+use prox_span::Span;
 
 /// Index to AST node wrapping `u32`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -367,8 +365,6 @@ pub struct Ast {
     /// This is indexed by certain node types which require extra data.
     /// The exact layout can differ for each node type.
     extra_data: Vec<u32>,
-    /// String interner.
-    strings: Interner,
     /// Source spans parallel to each node.
     spans: Vec<Span>,
     /// Root note index.
@@ -441,23 +437,10 @@ impl NodeList {
     }
 }
 
-impl default::Default for Ast {
-    fn default() -> Self {
-        let interner = Interner::with_hasher(hash::RandomState::new());
-        Self::with_interner(interner)
-    }
-}
-
 impl Ast {
-    /// Create a new empty AST.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Create a new AST with a pre-existing interner.
     #[must_use]
-    pub fn with_interner(mut interner: Interner) -> Self {
+    pub fn with_interner(interner: &mut Interner) -> Self {
         let mut nodes = NodeList::new();
         let root = nodes.add(NodeTag::Program, NodeData::EMPTY);
         let empty_span = Span {
@@ -473,7 +456,6 @@ impl Ast {
             nodes,
             extra_data: Vec::with_capacity(1024),
             spans: vec![empty_span, empty_span],
-            strings: interner,
             root,
             kw_super,
             kw_this,
@@ -539,24 +521,6 @@ impl Ast {
         self.nodes.tag(index)
     }
 
-    /// Resolve a symbol into a string.
-    #[must_use]
-    pub fn resolve(&self, symbol: Symbol) -> Option<&str> {
-        self.strings.resolve(symbol)
-    }
-
-    /// Return a reference to the interner.
-    #[must_use]
-    pub const fn get_interner(&self) -> &Interner {
-        &self.strings
-    }
-
-    /// Return a mutable reference to the interner.
-    #[must_use]
-    pub const fn get_interner_mut(&mut self) -> &mut Interner {
-        &mut self.strings
-    }
-
     /// Return the symbol representing the super keyword.
     #[must_use]
     pub const fn kw_super(&self) -> Symbol {
@@ -576,27 +540,23 @@ impl Ast {
     }
 }
 
-#[derive(Default)]
 pub struct AstBuilder {
     ast: Ast,
+    interner: Interner,
 }
 
 impl AstBuilder {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Create a new builder with a pre-existing interner.
     #[must_use]
-    pub fn with_interner(interner: Interner) -> Self {
+    pub fn with_interner(mut interner: Interner) -> Self {
         Self {
-            ast: Ast::with_interner(interner),
+            ast: Ast::with_interner(&mut interner),
+            interner,
         }
     }
 
     #[must_use]
-    pub fn finish(mut self, statements: &[NodeIndex]) -> Ast {
+    pub fn finish(mut self, statements: &[NodeIndex]) -> (Ast, Interner) {
         let (lhs, length) = self
             .ast
             .add_extra_data_iter(statements.iter().map(|stmt| stmt.raw()));
@@ -608,12 +568,12 @@ impl AstBuilder {
                 token_or_symbol: 0,
             },
         );
-        self.ast
+        (self.ast, self.interner)
     }
 
     /// Intern a string.
     pub fn intern(&mut self, text: &str) -> Symbol {
-        self.ast.strings.intern(text)
+        self.interner.intern(text)
     }
 }
 
@@ -1048,8 +1008,13 @@ impl Ast {
     /// # Errors
     /// If any of the child AST nodes are malformed this function fails.
     /// The buffer may be partially written to still.
-    pub fn dump(&self, buffer: &mut impl fmt::Write, index: NodeIndex) -> Result<(), fmt::Error> {
-        self.dump_impl(buffer, index, 0)
+    pub fn dump(
+        &self,
+        buffer: &mut impl fmt::Write,
+        interner: &Interner,
+        index: NodeIndex,
+    ) -> Result<(), fmt::Error> {
+        self.dump_impl(buffer, interner, index, 0)
     }
 
     #[expect(
@@ -1059,6 +1024,7 @@ impl Ast {
     fn dump_impl(
         &self,
         buffer: &mut impl fmt::Write,
+        interner: &Interner,
         index: NodeIndex,
         depth: u8,
     ) -> Result<(), fmt::Error> {
@@ -1073,7 +1039,12 @@ impl Ast {
                 let statements = self.extra_data_slice(index);
                 writeln!(buffer, "{indent}Program:")?;
                 for stmt in statements {
-                    self.dump_impl(buffer, NodeIndex::new(*stmt).ok_or(fmt::Error)?, next_depth)?;
+                    self.dump_impl(
+                        buffer,
+                        interner,
+                        NodeIndex::new(*stmt).ok_or(fmt::Error)?,
+                        next_depth,
+                    )?;
                 }
             }
             NodeTag::StmtFnDecl => {
@@ -1082,7 +1053,7 @@ impl Ast {
                 let third_indent = " ".repeat(2 * (next_depth.saturating_add(2)) as usize);
                 let name = {
                     let sym = data.symbol();
-                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                    interner.resolve(sym).ok_or(fmt::Error)?
                 };
                 let (is_method, body, parameters) = self.fn_decl_extra(index);
                 let func_or_meth = if is_method { "meth" } else { "func" };
@@ -1094,7 +1065,7 @@ impl Ast {
 
                 if !parameters.is_empty() {
                     for (param_index, param) in parameters.iter().enumerate() {
-                        let param_name = self.resolve((*param).into()).ok_or(fmt::Error)?;
+                        let param_name = interner.resolve((*param).into()).ok_or(fmt::Error)?;
                         writeln!(buffer, "{second_indent}Param{param_index}:")?;
                         writeln!(buffer, "{third_indent}\"{param_name}\"")?;
                     }
@@ -1102,6 +1073,7 @@ impl Ast {
                 writeln!(buffer, "{next_indent}Body:")?;
                 self.dump_impl(
                     buffer,
+                    interner,
                     NodeIndex::new(body).ok_or(fmt::Error)?,
                     next_depth.saturating_add(1),
                 )?;
@@ -1114,7 +1086,7 @@ impl Ast {
                 let second_indent = " ".repeat(2 * (next_depth.saturating_add(1)) as usize);
                 writeln!(buffer, "{indent}ExprCall:")?;
                 writeln!(buffer, "{next_indent}Callee: ")?;
-                self.dump_impl(buffer, callee, next_depth.saturating_add(1))?;
+                self.dump_impl(buffer, interner, callee, next_depth.saturating_add(1))?;
 
                 if !args.is_empty() {
                     writeln!(buffer, "{next_indent}Args:")?;
@@ -1122,6 +1094,7 @@ impl Ast {
                         writeln!(buffer, "{second_indent}Arg{arg_index}:")?;
                         self.dump_impl(
                             buffer,
+                            interner,
                             NodeIndex::new(*arg).ok_or(fmt::Error)?,
                             next_depth.saturating_add(2),
                         )?;
@@ -1131,12 +1104,12 @@ impl Ast {
             NodeTag::StmtVarDecl => {
                 let name = {
                     let sym = data.symbol();
-                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                    interner.resolve(sym).ok_or(fmt::Error)?
                 };
                 writeln!(buffer, "{indent}VarDecl [{name}]:")?;
 
                 if let Some(value) = data.left() {
-                    self.dump_impl(buffer, value, next_depth)?;
+                    self.dump_impl(buffer, interner, value, next_depth)?;
                 }
             }
             NodeTag::StmtClassDecl => {
@@ -1144,12 +1117,11 @@ impl Ast {
                 let second_indent = " ".repeat(2 * (next_depth.saturating_add(1)) as usize);
                 let name = {
                     let sym = data.symbol();
-                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                    interner.resolve(sym).ok_or(fmt::Error)?
                 };
                 let (methods, super_class) = self.class_decl_extra(index);
                 if let Some(super_class) = super_class {
-                    let super_class_name = self
-                        .strings
+                    let super_class_name = interner
                         .resolve(self.data(super_class).symbol())
                         .ok_or(fmt::Error)?;
                     writeln!(buffer, "{indent}ClassDecl [{name} < {super_class_name}]:")?;
@@ -1162,6 +1134,7 @@ impl Ast {
                     writeln!(buffer, "{second_indent}Method{method_index}:")?;
                     self.dump_impl(
                         buffer,
+                        interner,
                         NodeIndex::new(*method).ok_or(fmt::Error)?,
                         next_depth.saturating_add(2),
                     )?;
@@ -1171,7 +1144,12 @@ impl Ast {
                 let statements = self.extra_data_slice(index);
                 writeln!(buffer, "{indent}Block:")?;
                 for stmt in statements {
-                    self.dump_impl(buffer, NodeIndex::new(*stmt).ok_or(fmt::Error)?, next_depth)?;
+                    self.dump_impl(
+                        buffer,
+                        interner,
+                        NodeIndex::new(*stmt).ok_or(fmt::Error)?,
+                        next_depth,
+                    )?;
                 }
             }
             NodeTag::If => {
@@ -1182,15 +1160,16 @@ impl Ast {
 
                 writeln!(buffer, "{indent}If:")?;
                 writeln!(buffer, "{next_indent}Condition:")?;
-                self.dump_impl(buffer, condition, next_depth.saturating_add(1))?;
+                self.dump_impl(buffer, interner, condition, next_depth.saturating_add(1))?;
 
                 writeln!(buffer, "{next_indent}Then:")?;
-                self.dump_impl(buffer, then_clause, next_depth.saturating_add(1))?;
+                self.dump_impl(buffer, interner, then_clause, next_depth.saturating_add(1))?;
 
                 if let Some(else_clause) = self.if_extra(index) {
                     writeln!(buffer, "{next_indent}Else:")?;
                     self.dump_impl(
                         buffer,
+                        interner,
                         NodeIndex::new(else_clause).ok_or(fmt::Error)?,
                         next_depth.saturating_add(1),
                     )?;
@@ -1208,6 +1187,7 @@ impl Ast {
                     writeln!(buffer, "{next_indent}Initializer:")?;
                     self.dump_impl(
                         buffer,
+                        interner,
                         NodeIndex::new(initializer).ok_or(fmt::Error)?,
                         next_depth.saturating_add(1),
                     )?;
@@ -1217,6 +1197,7 @@ impl Ast {
                     writeln!(buffer, "{next_indent}Condition:")?;
                     self.dump_impl(
                         buffer,
+                        interner,
                         NodeIndex::new(condition).ok_or(fmt::Error)?,
                         next_depth.saturating_add(1),
                     )?;
@@ -1226,13 +1207,14 @@ impl Ast {
                     writeln!(buffer, "{next_indent}Increment:")?;
                     self.dump_impl(
                         buffer,
+                        interner,
                         NodeIndex::new(increment).ok_or(fmt::Error)?,
                         next_depth.saturating_add(1),
                     )?;
                 }
 
                 writeln!(buffer, "{next_indent}Body:")?;
-                self.dump_impl(buffer, body, next_depth.saturating_add(1))?;
+                self.dump_impl(buffer, interner, body, next_depth.saturating_add(1))?;
             }
             NodeTag::While => {
                 let next_indent = " ".repeat(2 * next_depth as usize);
@@ -1242,26 +1224,26 @@ impl Ast {
 
                 writeln!(buffer, "{indent}While:")?;
                 writeln!(buffer, "{next_indent}Condition:")?;
-                self.dump_impl(buffer, condition, next_depth.saturating_add(1))?;
+                self.dump_impl(buffer, interner, condition, next_depth.saturating_add(1))?;
 
                 writeln!(buffer, "{next_indent}Body:")?;
-                self.dump_impl(buffer, body, next_depth.saturating_add(1))?;
+                self.dump_impl(buffer, interner, body, next_depth.saturating_add(1))?;
             }
             NodeTag::Return => {
                 writeln!(buffer, "{indent}Return:")?;
                 if let Some(lhs) = data.left() {
-                    self.dump_impl(buffer, lhs, next_depth)?;
+                    self.dump_impl(buffer, interner, lhs, next_depth)?;
                 }
             }
             NodeTag::Print => {
                 writeln!(buffer, "{indent}Print:")?;
                 let lhs = data.left().ok_or(fmt::Error)?;
-                self.dump_impl(buffer, lhs, next_depth)?;
+                self.dump_impl(buffer, interner, lhs, next_depth)?;
             }
             NodeTag::ExprStmt => {
                 writeln!(buffer, "{indent}ExprStmt:")?;
                 let lhs = data.left().ok_or(fmt::Error)?;
-                self.dump_impl(buffer, lhs, next_depth)?;
+                self.dump_impl(buffer, interner, lhs, next_depth)?;
             }
             NodeTag::Unary => {
                 let op = UnaryOp::try_from(data.token_or_symbol)
@@ -1270,7 +1252,7 @@ impl Ast {
                 let value = data.left().ok_or(fmt::Error)?;
 
                 writeln!(buffer, "ExprUnary [{op}]:")?;
-                self.dump_impl(buffer, value, next_depth)?;
+                self.dump_impl(buffer, interner, value, next_depth)?;
             }
             NodeTag::Binary => {
                 let op = BinaryOp::try_from(data.token_or_symbol)
@@ -1285,25 +1267,25 @@ impl Ast {
                 writeln!(buffer, "{indent}ExprBinary [{op}]:")?;
 
                 writeln!(buffer, "{next_indent}LHS:")?;
-                self.dump_impl(buffer, lhs, next_depth.saturating_add(1))?;
+                self.dump_impl(buffer, interner, lhs, next_depth.saturating_add(1))?;
 
                 writeln!(buffer, "{next_indent}RHS:")?;
-                self.dump_impl(buffer, rhs, next_depth.saturating_add(1))?;
+                self.dump_impl(buffer, interner, rhs, next_depth.saturating_add(1))?;
             }
             NodeTag::Group => {
                 let value = data.left().ok_or(fmt::Error)?;
                 writeln!(buffer, "{indent}Group:")?;
-                self.dump_impl(buffer, value, next_depth)?;
+                self.dump_impl(buffer, interner, value, next_depth)?;
             }
             NodeTag::Assignment => {
                 let value = data.left().ok_or(fmt::Error)?;
                 let name = {
                     let sym = data.symbol();
-                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                    interner.resolve(sym).ok_or(fmt::Error)?
                 };
 
                 writeln!(buffer, "{indent}ExprAssign [{name}]:")?;
-                self.dump_impl(buffer, value, next_depth)?;
+                self.dump_impl(buffer, interner, value, next_depth)?;
             }
             NodeTag::FieldGet => {
                 let next_indent = " ".repeat(2 * next_depth as usize);
@@ -1311,12 +1293,12 @@ impl Ast {
                 let object = data.left().ok_or(fmt::Error)?;
                 let field = {
                     let sym = data.symbol();
-                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                    interner.resolve(sym).ok_or(fmt::Error)?
                 };
 
                 writeln!(buffer, "{indent}FieldGet:")?;
                 writeln!(buffer, "{next_indent}Instance:")?;
-                self.dump_impl(buffer, object, next_depth.saturating_add(1))?;
+                self.dump_impl(buffer, interner, object, next_depth.saturating_add(1))?;
                 writeln!(buffer, "{next_indent}Field:")?;
                 writeln!(buffer, "{second_indent}{field}")?;
             }
@@ -1327,33 +1309,33 @@ impl Ast {
                 let value = data.right().ok_or(fmt::Error)?;
                 let field = {
                     let sym = data.symbol();
-                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                    interner.resolve(sym).ok_or(fmt::Error)?
                 };
 
                 writeln!(buffer, "{indent}FieldSet:")?;
                 writeln!(buffer, "{next_indent}Instance:")?;
-                self.dump_impl(buffer, object, next_depth.saturating_add(1))?;
+                self.dump_impl(buffer, interner, object, next_depth.saturating_add(1))?;
                 writeln!(buffer, "{next_indent}Field:")?;
                 writeln!(buffer, "{second_indent}{field}")?;
                 writeln!(buffer, "{next_indent}Value:")?;
-                self.dump_impl(buffer, value, next_depth.saturating_add(1))?;
+                self.dump_impl(buffer, interner, value, next_depth.saturating_add(1))?;
             }
             NodeTag::SuperMethod => {
                 let next_indent = " ".repeat(2 * next_depth as usize);
                 let name = {
                     let sym = data.symbol();
-                    self.strings.resolve(sym).ok_or(fmt::Error)?
+                    interner.resolve(sym).ok_or(fmt::Error)?
                 };
 
                 writeln!(buffer, "{indent}SuperMethod:")?;
                 writeln!(buffer, "{next_indent}{name}")?;
             }
             NodeTag::Ident => {
-                let lexeme = self.strings.resolve(data.symbol()).ok_or(fmt::Error)?;
+                let lexeme = interner.resolve(data.symbol()).ok_or(fmt::Error)?;
                 writeln!(buffer, "{indent}{lexeme}")?;
             }
             NodeTag::StringLiteral => {
-                let lexeme = self.strings.resolve(data.symbol()).ok_or(fmt::Error)?;
+                let lexeme = interner.resolve(data.symbol()).ok_or(fmt::Error)?;
                 writeln!(buffer, "{indent}{lexeme:?}")?;
             }
             NodeTag::Number => {

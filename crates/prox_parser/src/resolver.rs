@@ -29,7 +29,7 @@ use core::default;
 use core::fmt;
 use prox_interner::{Interner, Symbol};
 use prox_lexer::SourceCode;
-use prox_lexer::span::Span;
+use prox_span::Span;
 use std::collections::HashMap;
 use std::hash::RandomState;
 

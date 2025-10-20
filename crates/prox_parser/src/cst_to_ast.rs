@@ -11,10 +11,10 @@ use crate::{
         },
     },
 };
-use core::default;
 use core::fmt;
 use prox_interner::{Interner, Symbol};
-use prox_lexer::{SourceCode, span::Span};
+use prox_lexer::SourceCode;
+use prox_span::Span;
 
 #[derive(Debug)]
 pub struct ConversionError {
@@ -93,20 +93,7 @@ pub struct CstToAstConverter {
     builder: AstBuilder,
 }
 
-impl default::Default for CstToAstConverter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl CstToAstConverter {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            builder: AstBuilder::new(),
-        }
-    }
-
     /// Create a new converter with a pre-existing interner.
     #[must_use]
     pub fn with_interner(interner: Interner) -> Self {
@@ -120,7 +107,11 @@ impl CstToAstConverter {
     ///
     /// # Errors
     /// The conversion expects a correctly parsed CST and will error if there are any missing nodes.
-    pub fn convert(mut self, source: &SourceCode<'_>, root: &Cst) -> Result<Ast, ConversionError> {
+    pub fn convert(
+        mut self,
+        source: &SourceCode<'_>,
+        root: &Cst,
+    ) -> Result<(Ast, Interner), ConversionError> {
         let program = Program::ref_cast(root).missing("program")?;
         let mut statements = Vec::new();
         for decl_or_stmt in program.declarations_or_statements() {

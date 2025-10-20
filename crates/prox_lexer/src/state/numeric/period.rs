@@ -1,8 +1,8 @@
 use crate::source::SourceChar;
-use crate::span::Span;
 use crate::state::numeric::decimal::DecimalState;
 use crate::state::{LexerPutBack, LexerTransition, State};
 use crate::token::{Token, TokenKind};
+use prox_span::Span;
 
 /// The state after seeing digit(s) and then a dot.
 #[derive(Debug)]

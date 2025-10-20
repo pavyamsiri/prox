@@ -1,7 +1,7 @@
 use crate::source::SourceChar;
-use crate::span::Span;
 use crate::state::{LexerPutBack, LexerTransition, State};
 use crate::token::{Token, TokenKind};
+use prox_span::Span;
 
 /// The state after the seeing digit(s), a dot and then a digit.
 #[derive(Debug)]

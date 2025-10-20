@@ -1,10 +1,10 @@
 extern crate alloc;
 
 use crate::source::SourceChar;
-use crate::span::Span;
 use crate::state::{LexerPutBack, LexerTransition, State};
 use crate::token::{Token, TokenKind};
 use alloc::collections::BTreeMap;
+use prox_span::Span;
 use std::sync::LazyLock;
 
 /// The hashmap for keywords

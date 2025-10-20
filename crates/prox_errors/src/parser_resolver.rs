@@ -1,8 +1,8 @@
 use crate::ReportableError;
 use ariadne::{Color, Config, Label, Report as AReport, ReportKind, Source};
 use core::ops;
-use prox_parser::Span;
 use prox_parser::resolver::{ResolutionError, ResolvedIdent};
+use prox_span::Span;
 use std::io;
 
 type Report<'err> = AReport<'err, (&'err str, ops::Range<usize>)>;

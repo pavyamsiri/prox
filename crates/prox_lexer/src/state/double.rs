@@ -1,7 +1,7 @@
 use crate::source::SourceChar;
-use crate::span::Span;
 use crate::state::{LexerPutBack, LexerTransition, State};
 use crate::token::{Token, TokenKind};
+use prox_span::Span;
 
 /// Information to lex a double character token.
 #[derive(Debug)]

@@ -1,7 +1,7 @@
 use crate::ReportableError;
 use ariadne::{Color, Config, Label, Report as AReport, ReportKind, Source};
 use core::ops;
-use prox_parser::Span;
+use prox_span::Span;
 use prox_walker::error::{RuntimeError, RuntimeErrorKind};
 use std::io;
 

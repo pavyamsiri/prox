@@ -1,7 +1,8 @@
 use crate::ReportableError;
 use ariadne::{Color, Config, Label, LabelAttach, Report as AReport, ReportKind, Source};
 use core::ops;
-use prox_parser::{Span, Token, cst::ParseError as CstError};
+use prox_parser::{Token, cst::ParseError as CstError};
+use prox_span::Span;
 use std::io;
 
 type Report<'err> = AReport<'err, (&'err str, ops::Range<usize>)>;

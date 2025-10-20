@@ -1,9 +1,9 @@
 use crate::{
     source::SourceChar,
-    span::Span,
     state::{LexerPutBack, LexerTransition, State},
     token::{Token, TokenKind},
 };
+use prox_span::Span;
 
 /// The state after seeing a whitespace.
 #[derive(Debug)]

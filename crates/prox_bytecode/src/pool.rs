@@ -1,11 +1,11 @@
-use crate::function::Function;
+use crate::function::Closure;
 use prox_interner::{ConstantIndex, ConstantPool, Interner, Symbol};
 use std::hash::RandomState;
 
 pub struct ConstantInterner {
     strings: Interner,
     numbers: ConstantPool<f64>,
-    functions: ConstantPool<Function>,
+    closures: ConstantPool<Closure>,
 }
 
 impl ConstantInterner {
@@ -14,7 +14,7 @@ impl ConstantInterner {
         Self {
             strings: interner,
             numbers: ConstantPool::with_hasher(RandomState::new()),
-            functions: ConstantPool::with_hasher(RandomState::new()),
+            closures: ConstantPool::with_hasher(RandomState::new()),
         }
     }
 
@@ -29,8 +29,8 @@ impl ConstantInterner {
     }
 
     #[must_use]
-    pub fn resolve_function(&self, index: ConstantIndex<Function>) -> Option<&Function> {
-        self.functions.resolve(index)
+    pub fn resolve_closure(&self, index: ConstantIndex<Closure>) -> Option<&Closure> {
+        self.closures.resolve(index)
     }
 }
 
@@ -46,7 +46,7 @@ impl ConstantInterner {
     }
 
     #[must_use]
-    pub fn add_function(&mut self, function: Function) -> ConstantIndex<Function> {
-        self.functions.intern(function)
+    pub fn add_closure(&mut self, function: Closure) -> ConstantIndex<Closure> {
+        self.closures.intern(function)
     }
 }

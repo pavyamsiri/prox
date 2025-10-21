@@ -98,6 +98,12 @@ impl Chunk {
         let max_line = source.get_max_line();
         let num_digits = 4usize.max((max_line.checked_ilog10().unwrap_or(0) + 1) as usize);
         let name = resolver.resolve_string(self.name).ok_or(fmt::Error)?;
+        // 2 space indent + 4 hexdigit address + 1 colon + 1 space + 1 L
+        let prefix = format!(
+            "{:>width$}- ",
+            " ",
+            width = INDENT.len() + 4 + 1 + 1 + num_digits
+        );
 
         writeln!(buffer, "Chunk <{name}>:")?;
         let mut previous_line_number: Option<usize> = None;
@@ -121,7 +127,7 @@ impl Chunk {
                 )?;
             }
             if let Some(opcode) = opcode {
-                opcode.format(buffer, resolver, offset)?;
+                opcode.format(buffer, &prefix, resolver, offset)?;
             } else {
                 write!(buffer, "invalid")?;
             }

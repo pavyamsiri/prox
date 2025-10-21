@@ -1,11 +1,14 @@
 use core::fmt;
+use mitsein::vec1::Vec1;
 use prox_bytecode::InstructionOffset;
 use prox_bytecode::Opcode;
 use prox_bytecode::OpcodeEmitter;
 use prox_bytecode::StackSlot;
+use prox_bytecode::UpvalueIndex;
 use prox_bytecode::chunk::Chunk;
 use prox_bytecode::chunk::ChunkId;
-use prox_bytecode::function::Function;
+use prox_bytecode::function::Closure;
+use prox_bytecode::function::Upvalue;
 use prox_bytecode::is_jump_opcode;
 use prox_bytecode::pool::ConstantInterner;
 use prox_interner::{Interner, Symbol};
@@ -239,51 +242,70 @@ impl Compilation {
 struct Local {
     name: Symbol,
     depth: usize,
+    is_captured: bool,
 }
 
-struct Compiler {
+struct CompilerContext {
     locals: Vec<Local>,
     depth: usize,
+    upvalues: Vec<Upvalue>,
 }
 
-impl Compiler {
-    /// Begin a new scope.
+impl CompilerContext {
+    const fn new() -> Self {
+        Self {
+            locals: Vec::new(),
+            upvalues: Vec::new(),
+            depth: 0,
+        }
+    }
+
     const fn begin_scope(&mut self) {
         self.depth += 1;
     }
 
-    /// End scope.
-    #[must_use]
-    fn end_scope(&mut self) -> usize {
+    fn end_scope(&mut self, chunk: &mut ChunkBuilder, span: Span) {
         let old_depth = self.depth;
         self.depth -= 1;
 
-        if let Some(index) = self
+        for local in self
             .locals
             .iter()
-            .position(|local| local.depth >= old_depth)
+            .rev()
+            .take_while(|local| local.depth >= old_depth)
         {
-            self.locals.drain(index..).count()
-        } else {
-            0
+            if local.is_captured {
+                chunk.emit_opcode(Opcode::CloseUpvalue, span);
+            } else {
+                chunk.emit_opcode(Opcode::Pop, span);
+            }
         }
     }
 
-    /// Add a local variable.
-    fn add_local(&mut self, name: Symbol) {
+    fn add_local(&mut self, name: Symbol) -> StackSlot {
         self.locals.push(Local {
             name,
             depth: self.depth,
+            is_captured: false,
         });
+        StackSlot::try_from(self.locals.len() - 1).unwrap()
     }
 
+    fn add_upvalue(&mut self, upvalue: Upvalue) -> u32 {
+        if let Some(index) = self.upvalues.iter().position(|&val| val == upvalue) {
+            return u32::try_from(index).expect("not supporting upvalue indices beyond 2^32.");
+        }
+        self.upvalues.push(upvalue);
+        u32::try_from(self.upvalues.len() - 1).expect("not supporting upvalue indices beyond 2^32.")
+    }
+
+    // NOTE(pavyamsiri): We use `index + 1` to reserve stack slot 0 for the VM to use as the call frame slot.
     /// Resolve a local variable.
-    // NOTE(pavyamsiri): This is index + 1 in old implementation.
     fn resolve_local(&self, name: Symbol) -> Option<StackSlot> {
         for (index, local) in self.locals.iter().enumerate().rev() {
             if local.name == name {
                 return Some(
-                    index
+                    (index + 1)
                         .try_into()
                         .expect("not supporting stack sizes beyond 2^32 values."),
                 );
@@ -291,13 +313,131 @@ impl Compiler {
         }
         None
     }
+
+    fn assign_variable(
+        &mut self,
+        pool: &mut ChunkPoolBuilder,
+        current_chunk: ChunkId,
+        name: Symbol,
+        span: Span,
+    ) -> Result<(), CompilationError> {
+        if self.depth > 0 {
+            self.add_local(name);
+        }
+        // Global scope
+        else {
+            pool.get_mut(current_chunk, span)?
+                .emit_opcode(Opcode::SetGlobal(name), span);
+        }
+        Ok(())
+    }
+}
+
+struct Compiler {
+    contexts: Vec1<CompilerContext>,
 }
 
 impl Compiler {
-    const fn new() -> Self {
+    fn begin_context(&mut self) {
+        self.contexts.push(CompilerContext::new());
+    }
+
+    fn end_context(&mut self) -> Option<CompilerContext> {
+        self.contexts.pop_if_many().or_none()
+    }
+
+    fn get_context(&self, index: usize) -> Option<&CompilerContext> {
+        self.contexts.get(index)
+    }
+
+    fn get_context_mut(&mut self, index: usize) -> Option<&mut CompilerContext> {
+        self.contexts.get_mut(index)
+    }
+
+    fn current_context(&self) -> &CompilerContext {
+        self.contexts.last()
+    }
+
+    fn current_context_mut(&mut self) -> &mut CompilerContext {
+        self.contexts.last_mut()
+    }
+
+    /// Begin a new scope.
+    fn begin_scope(&mut self) {
+        self.current_context_mut().begin_scope();
+    }
+
+    /// End scope.
+    fn end_scope(&mut self, chunk: &mut ChunkBuilder, span: Span) {
+        self.current_context_mut().end_scope(chunk, span);
+    }
+
+    /// Add a local variable.
+    fn add_local(&mut self, name: Symbol) {
+        self.current_context_mut().add_local(name);
+    }
+
+    fn assign_variable(
+        &mut self,
+        pool: &mut ChunkPoolBuilder,
+        current_chunk: ChunkId,
+        name: Symbol,
+        span: Span,
+    ) -> Result<(), CompilationError> {
+        self.current_context_mut()
+            .assign_variable(pool, current_chunk, name, span)
+    }
+
+    // TODO(pavyamsiri): This is wrong because we don't deal with upvalues.
+    /// Resolve a local variable.
+    fn resolve_local(&self, name: Symbol) -> Option<StackSlot> {
+        self.current_context().resolve_local(name)
+    }
+
+    /// Resolve an upvalue.
+    fn resolve_upvalue(&mut self, name: Symbol) -> Option<UpvalueIndex> {
+        // Go from innermost scope to outermost scope.
+        let num_contexts = usize::from(self.contexts.len());
+        let sentinel = num_contexts - 1;
+        for context_index in (0..sentinel).rev() {
+            if let Some(slot) = self
+                .get_context_mut(context_index)
+                .expect("must be in bounds")
+                .resolve_local(name)
+            {
+                // Mark local as captured.
+                self.get_context_mut(context_index)
+                    .expect("must be in bounds")
+                    .locals
+                    .get_mut(slot.to_usize() - 1)
+                    .expect("stack slot is guaranteed in bounds.")
+                    .is_captured = true;
+
+                // Immediate child context has local upvalue.
+                let mut upvalue = self
+                    .contexts
+                    .get_mut(context_index + 1)
+                    .expect("must be in bounds.")
+                    .add_upvalue(Upvalue::Local(slot));
+                // Mark descendants as having non-local upvalues
+                for child_index in (context_index + 2)..num_contexts {
+                    upvalue = self
+                        .contexts
+                        .get_mut(child_index)
+                        .expect("must be in bounds")
+                        .add_upvalue(Upvalue::Upvalue(UpvalueIndex::from(upvalue)));
+                }
+                return Some(UpvalueIndex::from(upvalue));
+            }
+        }
+        None
+    }
+}
+
+impl Compiler {
+    fn new() -> Self {
         Self {
-            depth: 0,
-            locals: Vec::new(),
+            contexts: Vec1::from_one(CompilerContext::new()),
         }
     }
 
@@ -403,11 +543,8 @@ impl Compiler {
             )?;
         }
 
-        let to_pop = self.end_scope();
         let chunk = pool.get_mut(current_chunk, span)?;
-        for _ in 0..to_pop {
-            chunk.emit_opcode(Opcode::Pop, span);
-        }
+        self.end_scope(chunk, span);
         Ok(())
     }
 
@@ -558,11 +695,8 @@ impl Compiler {
             }
         }
 
-        let to_pop = self.end_scope();
         let current_chunk = pool.get_mut(current_chunk, span)?;
-        for _ in 0..to_pop {
-            current_chunk.emit_opcode(Opcode::Pop, span);
-        }
+        self.end_scope(current_chunk, span);
         Ok(())
     }
 
@@ -829,36 +963,30 @@ impl Compiler {
 
         let sub_chunk = pool.allocate(fn_name, span)?;
 
-        let mut fn_compiler = Compiler::new();
-        fn_compiler.begin_scope();
+        self.begin_context();
+        self.begin_scope();
 
         // Define parameters
         for parameter in parameters.iter().copied() {
             let param_symbol = Symbol::from(parameter);
-            fn_compiler.add_local(param_symbol);
+            self.add_local(param_symbol);
         }
 
-        fn_compiler.compile_stmt(pool, sub_chunk, ast, interner, block_index)?;
+        self.compile_stmt(pool, sub_chunk, ast, interner, block_index)?;
+        let context = self.end_context().expect("popping a context we pushed on.");
 
-        let func = Function {
+        let func = Closure {
             name: fn_name,
             chunk: sub_chunk,
             arity: u8::try_from(parameters.len()).expect("can't have more than 255 parameters."),
+            upvalues: context.upvalues,
         };
 
-        let func_index = interner.add_function(func);
+        let closure_index = interner.add_closure(func);
         pool.get_mut(current_chunk, span)?
-            .emit_opcode(Opcode::LoadFunction(func_index), span);
+            .emit_opcode(Opcode::LoadClosure(closure_index), span);
 
-        // Local scope
-        if self.depth > 0 {
-            self.add_local(fn_name);
-        }
-        // Global scope
-        else {
-            pool.get_mut(current_chunk, span)?
-                .emit_opcode(Opcode::SetGlobal(fn_name), span);
-        }
+        self.assign_variable(pool, current_chunk, fn_name, span)?;
 
         Ok(())
     }
@@ -884,12 +1012,7 @@ impl Compiler {
         }
 
         // Local scope
-        if self.depth > 0 {
-            self.add_local(name);
-        } else {
-            pool.get_mut(current_chunk, span)?
-                .emit_opcode(Opcode::SetGlobal(name), span);
-        }
+        self.assign_variable(pool, current_chunk, name, span)?;
         Ok(())
     }
 
@@ -912,6 +1035,8 @@ impl Compiler {
         let chunk = pool.get_mut(current_chunk, span)?;
         if let Some(slot) = self.resolve_local(name) {
             chunk.emit_opcode(Opcode::SetLocal(slot), span);
+        } else if let Some(upvalue_index) = self.resolve_upvalue(name) {
+            chunk.emit_opcode(Opcode::SetUpvalue(upvalue_index), span);
         } else {
             chunk.emit_opcode(Opcode::SetGlobal(name), span);
         }
@@ -921,7 +1046,7 @@ impl Compiler {
 
     /// Compile an identifier.
     fn compile_identifier(
-        &self,
+        &mut self,
         pool: &mut ChunkPoolBuilder,
         current_chunk: ChunkId,
         ast: &Ast,
@@ -934,6 +1059,8 @@ impl Compiler {
         let chunk = pool.get_mut(current_chunk, span)?;
         if let Some(slot) = self.resolve_local(name) {
             chunk.emit_opcode(Opcode::GetLocal(slot), span);
+        } else if let Some(upvalue_index) = self.resolve_upvalue(name) {
+            chunk.emit_opcode(Opcode::GetUpvalue(upvalue_index), span);
         } else {
             chunk.emit_opcode(Opcode::GetGlobal(name), span);
         }

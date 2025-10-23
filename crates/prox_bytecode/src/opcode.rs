@@ -45,12 +45,16 @@ const SET_PROPERTY: u8 = 33;
 const INHERIT: u8 = 34;
 const ATTACH_METHOD: u8 = 35;
 const GET_SUPER: u8 = 36;
+const DEFINE_GLOBAL: u8 = 37;
 
 /// Check whether the given byte corresponds to a jump opcode.
 #[must_use]
 pub const fn is_jump_opcode(opcode: u8) -> bool {
     matches!(opcode, JUMP | JUMP_IF_FALSE)
 }
+
+/// Error when decoding an opcode and the stream ran out of bytes.
+pub struct DecodeError;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Opcode {
@@ -76,6 +80,8 @@ pub enum Opcode {
     GetGlobal(Symbol),
     /// Set a global variable.
     SetGlobal(Symbol),
+    /// Define a global variable.
+    DefineGlobal(Symbol),
     /// Push a local value to the top of the stack.
     GetLocal(StackSlot),
     /// Set a local value to the value that is on top of the stack.
@@ -203,6 +209,10 @@ impl Opcode {
                 chunk.emit_u8(GET_SUPER);
                 chunk.emit_u32(symbol.raw());
             }
+            Opcode::DefineGlobal(symbol) => {
+                chunk.emit_u8(DEFINE_GLOBAL);
+                chunk.emit_u32(symbol.raw());
+            }
             Opcode::SetGlobal(symbol) => {
                 chunk.emit_u8(SET_GLOBAL);
                 chunk.emit_u32(symbol.raw());
@@ -262,37 +272,43 @@ impl<'data> From<&'data [u8]> for ByteIterator<'data> {
 }
 
 impl ByteIterator<'_> {
-    fn next_u8(&mut self) -> Option<u8> {
+    const fn offset(self) -> usize {
+        self.index
+    }
+
+    fn next_u8(&mut self) -> Result<u8, DecodeError> {
         let value = self.data.get(self.index).copied();
         self.index += 1;
-        value
+        value.ok_or(DecodeError)
     }
 
-    fn next_u32(&mut self) -> Option<u32> {
-        let first = *self.data.get(self.index)?;
-        let second = *self.data.get(self.index + 1)?;
-        let third = *self.data.get(self.index + 2)?;
-        let fourth = *self.data.get(self.index + 3)?;
+    fn next_u32(&mut self) -> Result<u32, DecodeError> {
+        let first = *self.data.get(self.index).ok_or(DecodeError)?;
+        let second = *self.data.get(self.index + 1).ok_or(DecodeError)?;
+        let third = *self.data.get(self.index + 2).ok_or(DecodeError)?;
+        let fourth = *self.data.get(self.index + 3).ok_or(DecodeError)?;
         self.index += 4;
-        Some(u32::from_le_bytes([first, second, third, fourth]))
+        Ok(u32::from_le_bytes([first, second, third, fourth]))
     }
 
-    fn next_i32(&mut self) -> Option<i32> {
-        let first = *self.data.get(self.index)?;
-        let second = *self.data.get(self.index + 1)?;
-        let third = *self.data.get(self.index + 2)?;
-        let fourth = *self.data.get(self.index + 3)?;
+    fn next_i32(&mut self) -> Result<i32, DecodeError> {
+        let first = *self.data.get(self.index).ok_or(DecodeError)?;
+        let second = *self.data.get(self.index + 1).ok_or(DecodeError)?;
+        let third = *self.data.get(self.index + 2).ok_or(DecodeError)?;
+        let fourth = *self.data.get(self.index + 3).ok_or(DecodeError)?;
         self.index += 4;
-        Some(i32::from_le_bytes([first, second, third, fourth]))
+        Ok(i32::from_le_bytes([first, second, third, fourth]))
     }
 }
 
 impl Opcode {
     /// Decode a byte stream into an opcode if possible.
-    #[must_use]
-    pub fn decode(stream: &[u8]) -> Option<Opcode> {
+    ///
+    /// # Errors
+    /// This function will error if the stream does not have enough bytes to properly decode an opcode.
+    pub fn decode(stream: &[u8]) -> Result<(usize, Opcode), DecodeError> {
         let mut stream = ByteIterator::from(stream);
-        match stream.next_u8()? {
+        let op = match stream.next_u8()? {
             ATTACH_METHOD => Some(Opcode::AttachMethod),
             INHERIT => Some(Opcode::Inherit),
             PRINT => Some(Opcode::Print),
@@ -346,6 +362,10 @@ impl Opcode {
                 let symbol = stream.next_u32()?;
                 Some(Opcode::SetGlobal(symbol.into()))
             }
+            DEFINE_GLOBAL => {
+                let symbol = stream.next_u32()?;
+                Some(Opcode::DefineGlobal(symbol.into()))
+            }
             GET_PROPERTY => {
                 let symbol = stream.next_u32()?;
                 Some(Opcode::GetProperty(symbol.into()))
@@ -379,7 +399,8 @@ impl Opcode {
                 Some(Opcode::JumpIfFalse(offset.into()))
             }
             _ => None,
-        }
+        };
+        op.map(|op| (stream.offset(), op)).ok_or(DecodeError)
     }
 }
 
@@ -388,6 +409,10 @@ impl Opcode {
     ///
     /// # Errors
     /// This function will error if it can not write into the buffer.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "clearer to have all formatting code in one place."
+    )]
     pub fn format(
         self,
         buffer: &mut impl fmt::Write,
@@ -461,6 +486,11 @@ impl Opcode {
             Opcode::SetGlobal(symbol) => write!(
                 buffer,
                 "setglob {}",
+                resolver.resolve_string(symbol).ok_or(fmt::Error)?
+            ),
+            Opcode::DefineGlobal(symbol) => write!(
+                buffer,
+                "defglob {}",
                 resolver.resolve_string(symbol).ok_or(fmt::Error)?
             ),
             Opcode::GetProperty(symbol) => write!(

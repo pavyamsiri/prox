@@ -1,0 +1,17 @@
+[package]
+name = "prox_svm"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+prox_bytecode = { workspace = true }
+prox_compiler = { workspace = true }
+prox_interner = { workspace = true }
+prox_parser = { workspace = true }
+prox_span = { workspace = true }
+
+compact_str = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -8,4 +8,4 @@ pub mod pool;
 pub use index::{
     InstructionOffset, StackSlot, TryFromStackSlotError, TryFromUpvalueIndexError, UpvalueIndex,
 };
-pub use opcode::{Opcode, OpcodeEmitter, is_jump_opcode};
+pub use opcode::{DecodeError, Opcode, OpcodeEmitter, is_jump_opcode};

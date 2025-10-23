@@ -2,6 +2,7 @@ use crate::{class::Class, function::Closure};
 use prox_interner::{ConstantIndex, ConstantPool, Interner, Symbol};
 use std::hash::RandomState;
 
+#[derive(Debug)]
 pub struct ConstantInterner {
     strings: Interner,
     numbers: ConstantPool<f64>,
@@ -18,6 +19,11 @@ impl ConstantInterner {
             closures: ConstantPool::with_hasher(RandomState::new()),
             classes: ConstantPool::with_hasher(RandomState::new()),
         }
+    }
+
+    #[must_use]
+    pub const fn get_interner(&self) -> &Interner {
+        &self.strings
     }
 
     #[must_use]

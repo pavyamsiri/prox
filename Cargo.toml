@@ -9,6 +9,7 @@ members = [
     "crates/prox_bytecode",
     "crates/prox_compiler",
     "crates/prox_span",
+    "crates/prox_svm",
 ]
 resolver = "3"
 
@@ -16,6 +17,7 @@ resolver = "3"
 ariadne = "0.5.1"
 clap = { version = "4.5.48", features = ["derive"] }
 color-eyre = "0.6.5"
+compact_str = "0.9.0"
 mitsein = "0.8.0"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
@@ -27,6 +29,7 @@ prox_interner = { path = "crates/prox_interner" }
 prox_lexer = { path = "crates/prox_lexer" }
 prox_parser = { path = "crates/prox_parser" }
 prox_span = { path = "crates/prox_span" }
+prox_svm = { path = "crates/prox_svm" }
 prox_walker = { path = "crates/prox_walker" }
 
 [workspace.lints.rust]

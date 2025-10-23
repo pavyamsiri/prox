@@ -1,4 +1,5 @@
 use core::convert;
+use core::ops;
 
 /// Error when conversion from usize to `StackSlot` fails.
 #[derive(Debug)]
@@ -26,6 +27,14 @@ impl StackSlot {
     #[must_use]
     pub const fn to_usize(self) -> usize {
         self.index as usize
+    }
+}
+
+impl ops::Add for StackSlot {
+    type Output = StackSlot;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        StackSlot::from(self.to_u32() + rhs.to_u32())
     }
 }
 

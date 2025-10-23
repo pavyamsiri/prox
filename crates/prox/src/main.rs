@@ -5,6 +5,8 @@ use prox_errors::ReportableError as _;
 use prox_parser::cst::Parser;
 use prox_parser::cst_to_ast::CstToAstConverter;
 use prox_parser::resolver::Resolver;
+use prox_svm::io::StdoutContext as SvmStdoutContext;
+use prox_svm::run as svm_run;
 use prox_walker::environment::SharedEnvironment;
 use prox_walker::interpreter::{Interpreter, ResolvedAst};
 use prox_walker::io::StdoutContext;
@@ -32,6 +34,8 @@ pub enum CLCommand {
     Walk { path: PathBuf },
     /// Compile a file into bytecode and print disassembly.
     Disassemble { path: PathBuf },
+    /// Compile a file into bytecode and run it in an interpreter.
+    Run { path: PathBuf },
 }
 
 fn main() -> ExitCode {
@@ -73,6 +77,13 @@ fn fallable_main() -> Result<ExitCode, Report> {
             eprintln!("Disassembling {}...", path.display());
             let src = fs::read_to_string(&path)?;
             if !disassemble(&src, &path) {
+                return Ok(ExitCode::from(FRONTEND_ERROR));
+            }
+        }
+        CLCommand::Run { path } => {
+            eprintln!("Interpreting {}...", path.display());
+            let src = fs::read_to_string(&path)?;
+            if !interpret(&src, &path) {
                 return Ok(ExitCode::from(FRONTEND_ERROR));
             }
         }
@@ -180,6 +191,7 @@ fn disassemble(text: &str, path: &Path) -> bool {
     let path = &path.to_string_lossy();
     tracing::debug!("Parsing...");
     let cst = Parser::new(text).parse();
+    let source = cst.source.clone();
     let resolver = Resolver::default();
     tracing::debug!("Resolving...");
     let resolved_cst = match resolver.resolve(cst) {
@@ -205,7 +217,7 @@ fn disassemble(text: &str, path: &Path) -> bool {
     };
 
     tracing::debug!("Compiling...");
-    let unit = match compile(&ast, interner) {
+    let unit = match compile(&source, &ast, interner) {
         Ok(unit) => unit,
         Err(_err) => {
             tracing::warn!("should print error here");
@@ -217,5 +229,67 @@ fn disassemble(text: &str, path: &Path) -> bool {
         .expect("not handling io errors.");
     println!("{buffer}");
 
-    todo!();
+    true
+}
+
+fn interpret(text: &str, path: &Path) -> bool {
+    tracing::info!("{text}");
+    let path = &path.to_string_lossy();
+    tracing::debug!("Parsing...");
+    let cst = Parser::new(text).parse();
+    let source = cst.source.clone();
+    let resolver = Resolver::default();
+    tracing::debug!("Resolving...");
+    let resolved_cst = match resolver.resolve(cst) {
+        Ok(cst) => cst,
+        Err(errors) => {
+            let mut buffer = String::new();
+            for error in errors {
+                error.report(&mut buffer, path, text);
+            }
+            println!("{buffer}");
+            return false;
+        }
+    };
+
+    let converter = CstToAstConverter::with_interner(resolved_cst.interner);
+    tracing::debug!("Converting...");
+    let (ast, interner) = match converter.convert(&resolved_cst.source, &resolved_cst.root) {
+        Ok(ast) => ast,
+        Err(err) => {
+            tracing::error!("{err}");
+            return false;
+        }
+    };
+
+    tracing::debug!("Compiling...");
+    let mut unit = match compile(&source, &ast, interner) {
+        Ok(unit) => unit,
+        Err(_err) => {
+            tracing::warn!("should print error here");
+            return false;
+        }
+    };
+
+    let mut buffer = String::new();
+    unit.disassemble(&mut buffer, &resolved_cst.source)
+        .expect("not handling io errors.");
+    println!("{buffer}");
+
+    tracing::debug!("Interpreting...");
+    let mut context = SvmStdoutContext;
+    let res = svm_run(&mut context, &mut unit);
+    match res {
+        Ok(()) => {}
+        Err(err) => {
+            let mut err_buffer = String::new();
+            err.format(text, &mut err_buffer, unit.resolver.get_interner())
+                .expect("not handling buffer write failure.");
+            err_buffer.push('\n');
+            println!("{err_buffer}");
+            return false;
+        }
+    }
+
+    true
 }

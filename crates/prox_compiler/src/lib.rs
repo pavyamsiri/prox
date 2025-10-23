@@ -1,4 +1,7 @@
 use core::fmt;
+use mitsein::iter1::FromIterator1 as _;
+use mitsein::iter1::IntoIterator1 as _;
+use mitsein::segment::Tail as _;
 use mitsein::vec1::Vec1;
 use prox_bytecode::InstructionOffset;
 use prox_bytecode::Opcode;
@@ -67,6 +70,7 @@ enum CompilationErrorKind {
     TooManyChunks,
 }
 
+#[derive(Debug)]
 pub struct ChunkBuilder {
     name: Symbol,
     stream: Vec<u8>,
@@ -75,13 +79,11 @@ pub struct ChunkBuilder {
 }
 
 pub struct ChunkPoolBuilder {
-    root: ChunkBuilder,
-    functions: Vec<ChunkBuilder>,
+    chunks: Vec1<ChunkBuilder>,
 }
 
 pub struct ChunkPool {
-    root: Chunk,
-    functions: Box<[Chunk]>,
+    chunks: Vec1<Chunk>,
 }
 
 impl ChunkBuilder {
@@ -94,12 +96,18 @@ impl ChunkBuilder {
         }
     }
 
-    fn finish(self) -> Chunk {
+    fn finish(self, code: &SourceCode<'_>) -> Chunk {
+        let lines = self
+            .spans
+            .iter()
+            .map(|span| code.get_line(span).start)
+            .collect();
         Chunk {
             name: self.name,
             stream: self.stream.into_boxed_slice(),
             starts: self.starts.into_boxed_slice(),
             spans: self.spans.into_boxed_slice(),
+            lines,
         }
     }
 
@@ -165,32 +173,22 @@ impl OpcodeEmitter for ChunkBuilder {
 }
 
 impl ChunkPoolBuilder {
-    const fn new(name: Symbol) -> Self {
+    fn new(name: Symbol) -> Self {
         Self {
-            root: ChunkBuilder::new(name),
-            functions: Vec::new(),
+            chunks: Vec1::from_one(ChunkBuilder::new(name)),
         }
     }
 
-    fn finish(self) -> ChunkPool {
-        ChunkPool {
-            root: self.root.finish(),
-            functions: self
-                .functions
-                .into_iter()
-                .map(ChunkBuilder::finish)
-                .collect(),
-        }
+    fn finish(self, code: &SourceCode<'_>) -> ChunkPool {
+        let chunks = Vec1::from_iter1(self.chunks.into_iter1().map(|chunk| chunk.finish(code)));
+        ChunkPool { chunks }
     }
 
     fn get(&self, index: ChunkId, span: Span) -> Result<&ChunkBuilder, CompilationError> {
-        match index.to_usize() {
-            0 => Ok(&self.root),
-            index => self.functions.get(index - 1).ok_or(CompilationError {
-                kind: CompilationErrorKind::NullNode,
-                span,
-            }),
-        }
+        self.chunks.get(index.to_usize()).ok_or(CompilationError {
+            kind: CompilationErrorKind::NullNode,
+            span,
+        })
     }
 
     fn get_mut(
@@ -198,19 +196,19 @@ impl ChunkPoolBuilder {
         index: ChunkId,
         span: Span,
     ) -> Result<&mut ChunkBuilder, CompilationError> {
-        match index.to_usize() {
-            0 => Ok(&mut self.root),
-            index => self.functions.get_mut(index - 1).ok_or(CompilationError {
+        self.chunks
+            .get_mut(index.to_usize())
+            .ok_or(CompilationError {
                 kind: CompilationErrorKind::NullNode,
                 span,
-            }),
-        }
+            })
     }
 
     /// Allocate a new chunk given its name.
     fn allocate(&mut self, name: Symbol, span: Span) -> Result<ChunkId, CompilationError> {
-        self.functions.push(ChunkBuilder::new(name));
-        ChunkId::try_from(self.functions.len()).map_err(|_err| CompilationError {
+        self.chunks.push(ChunkBuilder::new(name));
+        let chunk_id = usize::from(self.chunks.len()) - 1;
+        ChunkId::try_from(chunk_id).map_err(|_err| CompilationError {
             kind: CompilationErrorKind::TooManyChunks,
             span,
         })
@@ -218,8 +216,8 @@ impl ChunkPoolBuilder {
 }
 
 pub struct Compilation {
-    pool: ChunkPool,
-    resolver: ConstantInterner,
+    pub pool: ChunkPool,
+    pub resolver: ConstantInterner,
 }
 
 impl Compilation {
@@ -231,9 +229,7 @@ impl Compilation {
         buffer: &mut impl fmt::Write,
         source: &SourceCode<'_>,
     ) -> Result<(), fmt::Error> {
-        self.pool.root.disassemble(buffer, source, &self.resolver)?;
-
-        for chunk in self.pool.functions.iter() {
+        for chunk in self.pool.chunks.iter() {
             chunk.disassemble(buffer, source, &self.resolver)?;
         }
 
@@ -241,15 +237,18 @@ impl Compilation {
     }
 }
 
+#[derive(Debug)]
 struct Local {
     name: Symbol,
     depth: usize,
     is_captured: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
 enum FunctionKind {
     Function,
     Method,
+    Init,
 }
 
 struct CompilableClosure<'params> {
@@ -260,17 +259,19 @@ struct CompilableClosure<'params> {
     span: Span,
 }
 
+#[derive(Debug)]
 struct CompilerContext {
     locals: Vec1<Local>,
     depth: usize,
     upvalues: Vec<Upvalue>,
+    kind: FunctionKind,
 }
 
 impl CompilerContext {
-    fn new(kind: &FunctionKind, interner: &mut ConstantInterner) -> Self {
-        let base_local = match *kind {
+    fn new(kind: FunctionKind, interner: &mut ConstantInterner) -> Self {
+        let base_local = match kind {
             FunctionKind::Function => interner.intern(""),
-            FunctionKind::Method => interner.intern("this"),
+            FunctionKind::Method | FunctionKind::Init => interner.intern("this"),
         };
         Self {
             locals: Vec1::from_one(Local {
@@ -280,6 +281,7 @@ impl CompilerContext {
             }),
             upvalues: Vec::new(),
             depth: 0,
+            kind,
         }
     }
 
@@ -291,12 +293,16 @@ impl CompilerContext {
         let old_depth = self.depth;
         self.depth -= 1;
 
-        for local in self
+        let Some(index) = self
             .locals
             .iter()
-            .rev()
-            .take_while(|local| local.depth >= old_depth)
-        {
+            .position(|local| local.depth >= old_depth)
+        else {
+            return;
+        };
+        let mut tail = self.locals.tail();
+        let drain_locals: Vec<_> = tail.swap_drain((index - 1)..).collect();
+        for local in drain_locals.into_iter().rev() {
             if local.is_captured {
                 chunk.emit_opcode(Opcode::CloseUpvalue, span);
             } else {
@@ -335,24 +341,27 @@ impl CompilerContext {
         None
     }
 
-    fn assign_variable(
-        &mut self,
+    fn define_variable(
+        &self,
         pool: &mut ChunkPoolBuilder,
         current_chunk: ChunkId,
         name: Symbol,
         span: Span,
     ) -> Result<(), CompilationError> {
         if self.depth > 0 {
-            tracing::debug!("Assigning {name:?} to local depth {}", self.depth);
-            self.add_local(name);
         }
         // Global scope
         else {
-            tracing::debug!("Assigning {name:?} to global");
             pool.get_mut(current_chunk, span)?
-                .emit_opcode(Opcode::SetGlobal(name), span);
+                .emit_opcode(Opcode::DefineGlobal(name), span);
         }
         Ok(())
+    }
+
+    fn declare_variable(&mut self, name: Symbol) {
+        if self.depth > 0 {
+            self.add_local(name);
+        }
     }
 }
 
@@ -361,7 +370,7 @@ struct Compiler {
 }
 
 impl Compiler {
-    fn begin_context(&mut self, kind: &FunctionKind, interner: &mut ConstantInterner) {
+    fn begin_context(&mut self, kind: FunctionKind, interner: &mut ConstantInterner) {
         self.contexts.push(CompilerContext::new(kind, interner));
     }
 
@@ -396,7 +405,24 @@ impl Compiler {
         self.current_context_mut().add_local(name);
     }
 
-    fn assign_variable(
+    fn declare_and_define_variable(
+        &mut self,
+        pool: &mut ChunkPoolBuilder,
+        current_chunk: ChunkId,
+        name: Symbol,
+        span: Span,
+    ) -> Result<(), CompilationError> {
+        self.current_context_mut().declare_variable(name);
+        self.current_context_mut()
+            .define_variable(pool, current_chunk, name, span)?;
+        Ok(())
+    }
+
+    fn declare_variable(&mut self, name: Symbol) {
+        self.current_context_mut().declare_variable(name);
+    }
+
+    fn define_variable(
         &mut self,
         pool: &mut ChunkPoolBuilder,
         current_chunk: ChunkId,
@@ -404,7 +430,7 @@ impl Compiler {
         span: Span,
     ) -> Result<(), CompilationError> {
         self.current_context_mut()
-            .assign_variable(pool, current_chunk, name, span)
+            .define_variable(pool, current_chunk, name, span)
     }
 
     fn resolve_local(&self, name: Symbol) -> Option<StackSlot> {
@@ -454,20 +480,21 @@ impl Compiler {
 impl Compiler {
     fn new(interner: &mut ConstantInterner) -> Self {
         Self {
-            contexts: Vec1::from_one(CompilerContext::new(&FunctionKind::Function, interner)),
+            contexts: Vec1::from_one(CompilerContext::new(FunctionKind::Function, interner)),
         }
     }
 
     fn compile(
         mut self,
         mut pool: ChunkPoolBuilder,
+        code: &SourceCode<'_>,
         ast: &Ast,
         mut interner: ConstantInterner,
     ) -> Result<Compilation, CompilationError> {
         self.compile_stmt(&mut pool, ChunkId::from(0), ast, &mut interner, ast.root())?;
 
         Ok(Compilation {
-            pool: pool.finish(),
+            pool: pool.finish(code),
             resolver: interner,
         })
     }
@@ -491,7 +518,9 @@ impl Compiler {
             NodeTag::StmtClassDecl => {
                 self.compile_class_decl(pool, current_chunk, ast, interner, index)
             }
-            NodeTag::Block => self.compile_block(pool, current_chunk, ast, interner, index),
+            NodeTag::Block => self
+                .compile_block(pool, current_chunk, ast, interner, index, true)
+                .map(|_| ()),
             NodeTag::If => self.compile_if(pool, current_chunk, ast, interner, index),
             NodeTag::Return => self.compile_return(pool, current_chunk, ast, interner, index),
             NodeTag::Print => self.compile_print(pool, current_chunk, ast, interner, index),
@@ -508,8 +537,12 @@ impl Compiler {
             NodeTag::SuperMethod => {
                 self.compile_get_super(pool, current_chunk, ast, interner, index)
             }
-            NodeTag::FieldGet => Self::compile_property_get(pool, current_chunk, ast, index),
-            NodeTag::FieldSet => Self::compile_property_set(pool, current_chunk, ast, index),
+            NodeTag::FieldGet => {
+                self.compile_property_get(pool, current_chunk, ast, interner, index)
+            }
+            NodeTag::FieldSet => {
+                self.compile_property_set(pool, current_chunk, ast, interner, index)
+            }
             NodeTag::Ident => self.compile_identifier(pool, current_chunk, ast, index),
             NodeTag::StringLiteral => Self::compile_string(pool, current_chunk, ast, index),
             NodeTag::Number => Self::compile_number(pool, current_chunk, ast, interner, index),
@@ -553,23 +586,25 @@ impl Compiler {
         ast: &Ast,
         interner: &mut ConstantInterner,
         index: NodeIndex,
-    ) -> Result<(), CompilationError> {
+        pop_locals: bool,
+    ) -> Result<bool, CompilationError> {
         self.begin_scope();
         let extra_data = ast.extra_data_slice(index);
         let span = ast.span(index);
-        for stmt_index in extra_data.iter().copied() {
-            self.compile_stmt(
-                pool,
-                current_chunk,
-                ast,
-                interner,
-                convert_node!(stmt_index => span)?,
-            )?;
+        let mut did_return = false;
+        for (stmt_index, stmt_node) in extra_data.iter().copied().enumerate() {
+            let stmt_node = convert_node!(stmt_node => span)?;
+            if stmt_index == (extra_data.len() - 1) {
+                did_return = matches!(ast.tag(stmt_node), NodeTag::Return);
+            }
+            self.compile_stmt(pool, current_chunk, ast, interner, stmt_node)?;
         }
 
-        let chunk = pool.get_mut(current_chunk, span)?;
-        self.end_scope(chunk, span);
-        Ok(())
+        if pop_locals {
+            let chunk = pool.get_mut(current_chunk, span)?;
+            self.end_scope(chunk, span);
+        }
+        Ok(did_return)
     }
 
     /// Compile an if statement.
@@ -604,7 +639,7 @@ impl Compiler {
         // Emit unpatched jump to end
         let jump_to_end = {
             let current_chunk = pool.get_mut(current_chunk, span)?;
-            let jump_to_end = current_chunk.emit_opcode(Opcode::JumpIfFalse(DEFAULT_OFFSET), span);
+            let jump_to_end = current_chunk.emit_opcode(Opcode::Jump(DEFAULT_OFFSET), span);
 
             // Patch jump to else
             current_chunk.patch_jump(jump_to_else, span)?;
@@ -717,6 +752,7 @@ impl Compiler {
             if let Some(exit_jump) = exit_jump {
                 current_chunk.patch_jump(exit_jump, span)?;
             }
+            current_chunk.emit_opcode(Opcode::Pop, span);
         }
 
         let current_chunk = pool.get_mut(current_chunk, span)?;
@@ -776,15 +812,20 @@ impl Compiler {
         let span = ast.span(index);
         let value_index = ast.data(index).left();
 
+        let is_init = matches!(self.current_context().kind, FunctionKind::Init);
+
         if let Some(value_index) = value_index {
             self.compile_stmt(pool, current_chunk, ast, interner, value_index)?;
+        } else if is_init {
+            pool.get_mut(current_chunk, span)?
+                .emit_opcode(Opcode::GetLocal(StackSlot::from(0)), span);
         } else {
             pool.get_mut(current_chunk, span)?
                 .emit_opcode(Opcode::LoadNil, span);
         }
 
         pool.get_mut(current_chunk, span)?
-            .emit_opcode(Opcode::Print, span);
+            .emit_opcode(Opcode::Return, span);
 
         Ok(())
     }
@@ -940,47 +981,42 @@ impl Compiler {
             BinaryOp::Eq => handle_binary!(Opcode::Eq),
             BinaryOp::Or => {
                 const DEFAULT_OFFSET: InstructionOffset = InstructionOffset::from_i32(-0x1211);
+                // 1. Load LHS
+                // 2. If LHS is true we need to jump over the RHS
+                // 3. If LHS is false we need to jump to RHS
                 self.compile_stmt(pool, current_chunk, ast, interner, lhs)?;
                 // If false then skip to rhs evaluation.
                 let jump_to_rhs = {
                     let current_chunk = pool.get_mut(current_chunk, span)?;
                     current_chunk.emit_opcode(Opcode::JumpIfFalse(DEFAULT_OFFSET), span)
                 };
-                pool.get_mut(current_chunk, span)?
-                    .emit_opcode(Opcode::Pop, span);
-                // Otherwise unconditional jump to end.
                 let jump_to_end = {
                     let current_chunk = pool.get_mut(current_chunk, span)?;
                     current_chunk.emit_opcode(Opcode::Jump(DEFAULT_OFFSET), span)
                 };
+
                 pool.get_mut(current_chunk, span)?
                     .patch_jump(jump_to_rhs, span)?;
-                self.compile_stmt(pool, current_chunk, ast, interner, rhs)?;
+                // Pop LHS and push RHS
                 pool.get_mut(current_chunk, span)?
                     .emit_opcode(Opcode::Pop, span);
+                self.compile_stmt(pool, current_chunk, ast, interner, rhs)?;
+
+                // End
                 pool.get_mut(current_chunk, span)?
                     .patch_jump(jump_to_end, span)?;
             }
             BinaryOp::And => {
                 const DEFAULT_OFFSET: InstructionOffset = InstructionOffset::from_i32(-0x018AB);
                 self.compile_stmt(pool, current_chunk, ast, interner, lhs)?;
-                // If true then skip to rhs evaluation.
-                let jump_to_rhs = {
-                    let current_chunk = pool.get_mut(current_chunk, span)?;
-                    current_chunk.emit_opcode(Opcode::JumpIfFalse(DEFAULT_OFFSET), span)
-                };
-                // Otherwise unconditional jump to end.
+                // If false then jump to end.
                 let jump_to_end = {
                     let current_chunk = pool.get_mut(current_chunk, span)?;
-                    current_chunk.emit_opcode(Opcode::Jump(DEFAULT_OFFSET), span)
+                    let jump = current_chunk.emit_opcode(Opcode::JumpIfFalse(DEFAULT_OFFSET), span);
+                    current_chunk.emit_opcode(Opcode::Pop, span);
+                    jump
                 };
-                pool.get_mut(current_chunk, span)?
-                    .patch_jump(jump_to_rhs, span)?;
-                pool.get_mut(current_chunk, span)?
-                    .emit_opcode(Opcode::Pop, span);
                 self.compile_stmt(pool, current_chunk, ast, interner, rhs)?;
-                pool.get_mut(current_chunk, span)?
-                    .emit_opcode(Opcode::Pop, span);
                 pool.get_mut(current_chunk, span)?
                     .patch_jump(jump_to_end, span)?;
             }
@@ -1026,7 +1062,7 @@ impl Compiler {
     ) -> Result<ConstantIndex<Closure>, CompilationError> {
         let sub_chunk = pool.allocate(closure.name, closure.span)?;
 
-        self.begin_context(&closure.kind, interner);
+        self.begin_context(closure.kind, interner);
         self.begin_scope();
 
         // Define parameters
@@ -1035,7 +1071,18 @@ impl Compiler {
             self.add_local(param_symbol);
         }
 
-        self.compile_stmt(pool, sub_chunk, ast, interner, closure.body)?;
+        let did_return = self.compile_block(pool, sub_chunk, ast, interner, closure.body, false)?;
+        if !did_return {
+            if matches!(closure.kind, FunctionKind::Init) {
+                pool.get_mut(sub_chunk, closure.span)?
+                    .emit_opcode(Opcode::GetLocal(StackSlot::from(0)), closure.span);
+            } else {
+                pool.get_mut(sub_chunk, closure.span)?
+                    .emit_opcode(Opcode::LoadNil, closure.span);
+            }
+            pool.get_mut(sub_chunk, closure.span)?
+                .emit_opcode(Opcode::Return, closure.span);
+        }
         let context = self.end_context().expect("popping a context we pushed on.");
 
         let func = Closure {
@@ -1064,6 +1111,12 @@ impl Compiler {
         assert!(!is_method, "should not be a method.");
         let block_index = convert_node!(block_index => span)?;
 
+        self.declare_variable(fn_name);
+
+        tracing::debug!(
+            "compiling function {}",
+            interner.resolve_string(fn_name).unwrap()
+        );
         let closure_index = self.compile_closure(
             pool,
             ast,
@@ -1079,7 +1132,7 @@ impl Compiler {
         pool.get_mut(current_chunk, span)?
             .emit_opcode(Opcode::LoadClosure(closure_index), span);
 
-        self.assign_variable(pool, current_chunk, fn_name, span)?;
+        self.define_variable(pool, current_chunk, fn_name, span)?;
 
         Ok(())
     }
@@ -1101,7 +1154,7 @@ impl Compiler {
         let class_index = interner.add_class(class);
         pool.get_mut(current_chunk, span)?
             .emit_opcode(Opcode::LoadClass(class_index), span);
-        self.assign_variable(pool, current_chunk, class_name, span)?;
+        self.declare_and_define_variable(pool, current_chunk, class_name, span)?;
 
         if let Some(super_class) = super_class {
             let super_class_name = ast.data(super_class).symbol();
@@ -1122,13 +1175,18 @@ impl Compiler {
             let method_span = ast.span(method_node);
             let (is_method, block, parameters) = ast.fn_decl_extra(method_node);
             assert!(is_method, "should be a method.");
+            let kind = if method_name == interner.intern("init") {
+                FunctionKind::Init
+            } else {
+                FunctionKind::Method
+            };
             let method_index = self.compile_closure(
                 pool,
                 ast,
                 interner,
                 &CompilableClosure {
                     name: method_name,
-                    kind: FunctionKind::Method,
+                    kind,
                     parameters,
                     body: convert_node!(block => method_span)?,
                     span: method_span,
@@ -1141,6 +1199,10 @@ impl Compiler {
             pool.get_mut(current_chunk, span)?
                 .emit_opcode(Opcode::AttachMethod, span);
         }
+
+        // Pop class.
+        pool.get_mut(current_chunk, span)?
+            .emit_opcode(Opcode::Pop, span);
 
         if super_class.is_some() {
             self.end_scope(pool.get_mut(current_chunk, span)?, span);
@@ -1170,7 +1232,7 @@ impl Compiler {
         }
 
         // Local scope
-        self.assign_variable(pool, current_chunk, name, span)?;
+        self.declare_and_define_variable(pool, current_chunk, name, span)?;
         Ok(())
     }
 
@@ -1197,14 +1259,19 @@ impl Compiler {
 
     /// Compile a property get.
     fn compile_property_get(
+        &mut self,
         pool: &mut ChunkPoolBuilder,
         current_chunk: ChunkId,
         ast: &Ast,
+        interner: &mut ConstantInterner,
         index: NodeIndex,
     ) -> Result<(), CompilationError> {
         let data = ast.data(index);
         let span = ast.span(index);
         let name = data.symbol();
+
+        let object = unwrap_node!(data.left() => span)?;
+        self.compile_stmt(pool, current_chunk, ast, interner, object)?;
 
         let chunk = pool.get_mut(current_chunk, span)?;
         chunk.emit_opcode(Opcode::GetProperty(name), span);
@@ -1213,14 +1280,21 @@ impl Compiler {
 
     /// Compile a property set.
     fn compile_property_set(
+        &mut self,
         pool: &mut ChunkPoolBuilder,
         current_chunk: ChunkId,
         ast: &Ast,
+        interner: &mut ConstantInterner,
         index: NodeIndex,
     ) -> Result<(), CompilationError> {
         let data = ast.data(index);
         let span = ast.span(index);
         let name = data.symbol();
+
+        let object = unwrap_node!(data.left() => span)?;
+        let value = unwrap_node!(data.right() => span)?;
+        self.compile_stmt(pool, current_chunk, ast, interner, object)?;
+        self.compile_stmt(pool, current_chunk, ast, interner, value)?;
 
         let chunk = pool.get_mut(current_chunk, span)?;
         chunk.emit_opcode(Opcode::SetProperty(name), span);
@@ -1281,29 +1355,49 @@ impl Compiler {
         span: Span,
     ) -> Result<(), CompilationError> {
         let chunk = pool.get_mut(current_chunk, span)?;
+        tracing::debug!("trying to resolve {name:?}");
         if let Some(slot) = self.resolve_local(name) {
+            tracing::debug!("\tresolved local {name:?}");
             chunk.emit_opcode(Opcode::GetLocal(slot), span);
         } else if let Some(upvalue_index) = self.resolve_upvalue(name) {
+            tracing::debug!("\tresolved upvalue {name:?}");
             chunk.emit_opcode(Opcode::GetUpvalue(upvalue_index), span);
         } else {
+            tracing::debug!("\tresolved global {name:?}");
             chunk.emit_opcode(Opcode::GetGlobal(name), span);
         }
         Ok(())
     }
 }
 
-impl Compiler {}
+impl ChunkPool {
+    /// Return the chunk with the given ID.
+    #[must_use]
+    pub fn get_chunk(&self, chunk: ChunkId) -> Option<&Chunk> {
+        self.chunks.get(chunk.to_usize())
+    }
+
+    /// Return a mutable reference to the chunk with the given ID.
+    #[must_use]
+    pub fn get_chunk_mut(&mut self, chunk: ChunkId) -> Option<&mut Chunk> {
+        self.chunks.get_mut(chunk.to_usize())
+    }
+}
 
 /// Compile an AST into bytecode.
 ///
 /// # Errors
 /// This will error if there are any issues during compilation like a malformed AST.
-pub fn compile(ast: &Ast, interner: Interner) -> Result<Compilation, CompilationError> {
+pub fn compile(
+    code: &SourceCode<'_>,
+    ast: &Ast,
+    interner: Interner,
+) -> Result<Compilation, CompilationError> {
+    tracing::info!("Compiling with interner {interner}");
     let mut interner = ConstantInterner::with_interner(interner);
 
-    let root = ast.root();
     let program_symbol = interner.intern("program");
     let pool = ChunkPoolBuilder::new(program_symbol);
-    tracing::debug!("Compiling root {root:?}...");
-    Compiler::new(&mut interner).compile(pool, ast, interner)
+    tracing::debug!("Compiling program...");
+    Compiler::new(&mut interner).compile(pool, code, ast, interner)
 }

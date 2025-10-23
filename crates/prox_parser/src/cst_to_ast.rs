@@ -97,7 +97,6 @@ impl CstToAstConverter {
     /// Create a new converter with a pre-existing interner.
     #[must_use]
     pub fn with_interner(interner: Interner) -> Self {
-        tracing::info!("Building AST with interner {interner}");
         Self {
             builder: AstBuilder::with_interner(interner),
         }

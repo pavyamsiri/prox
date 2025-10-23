@@ -44,6 +44,7 @@ pub struct Chunk {
     pub stream: Box<[u8]>,
     pub starts: Box<[usize]>,
     pub spans: Box<[Span]>,
+    pub lines: Box<[usize]>,
 }
 
 pub struct OpcodeIterator<'op> {
@@ -58,7 +59,9 @@ impl iter::Iterator for OpcodeIterator<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         let start = *self.starts.get(self.index)?;
         self.index += 1;
-        Opcode::decode(&self.stream[start..]).map(|op| (Some(op), start))
+        Opcode::decode(&self.stream[start..])
+            .map(|(_, op)| (Some(op), start))
+            .ok()
     }
 }
 
@@ -79,6 +82,12 @@ impl<'op> iter::IntoIterator for &'op Chunk {
 impl Chunk {
     fn iter(&self) -> OpcodeIterator<'_> {
         self.into_iter()
+    }
+
+    /// Return a slice of the stream from offset onwards.
+    #[must_use]
+    pub fn at(&self, offset: usize) -> &[u8] {
+        &self.stream[offset..]
     }
 
     /// Disassemble a chunk's bytecode into the given buffer.

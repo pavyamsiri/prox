@@ -1,5 +1,6 @@
 use crate::{
     StackSlot, UpvalueIndex,
+    class::Class,
     function::{Closure, Upvalue},
     index::InstructionOffset,
     pool::ConstantInterner,
@@ -38,6 +39,12 @@ const CALL: u8 = 27;
 const GET_UPVALUE: u8 = 28;
 const SET_UPVALUE: u8 = 29;
 const CLOSE_UPVALUE: u8 = 30;
+const LOAD_CLASS: u8 = 31;
+const GET_PROPERTY: u8 = 32;
+const SET_PROPERTY: u8 = 33;
+const INHERIT: u8 = 34;
+const ATTACH_METHOD: u8 = 35;
+const GET_SUPER: u8 = 36;
 
 /// Check whether the given byte corresponds to a jump opcode.
 #[must_use]
@@ -53,8 +60,18 @@ pub enum Opcode {
     Print,
     /// Return value.
     Return,
+    /// Inherit from superclass.
+    /// This instruction assumes the topmost values are:
+    /// 1. the subclass.
+    /// 2. the superclass.
+    Inherit,
+    /// Add a method to the current class.
+    /// Assumes that the methody body (closure) is on top of the stack.
+    AttachMethod,
     /// Pop the value on top of the stack.
     Pop,
+    /// Get the superclass's method.
+    GetSuper(Symbol),
     /// Get a global variable.
     GetGlobal(Symbol),
     /// Set a global variable.
@@ -63,6 +80,10 @@ pub enum Opcode {
     GetLocal(StackSlot),
     /// Set a local value to the value that is on top of the stack.
     SetLocal(StackSlot),
+    /// Get an instance's property.
+    GetProperty(Symbol),
+    /// Set an instance's property.
+    SetProperty(Symbol),
     /// Get an upvalue.
     GetUpvalue(UpvalueIndex),
     /// Set an upvalue.
@@ -117,9 +138,12 @@ pub enum Opcode {
     /// Read a 1-byte index to the string constant pool
     /// and then push that string onto the stack.
     LoadString(Symbol),
-    /// Read a 1-byte index to the function constant pool
-    /// and then push that function onto the stack.
+    /// Read a 1-byte index to the closure constant pool
+    /// and then push that closure onto the stack.
     LoadClosure(ConstantIndex<Closure>),
+    /// Read a 1-byte index to the class constant pool
+    /// and then push that class onto the stack.
+    LoadClass(ConstantIndex<Class>),
 }
 
 pub trait OpcodeEmitter {
@@ -134,6 +158,8 @@ pub trait OpcodeEmitter {
 impl Opcode {
     pub fn encode(self, chunk: &mut impl OpcodeEmitter) {
         match self {
+            Opcode::AttachMethod => chunk.emit_u8(ATTACH_METHOD),
+            Opcode::Inherit => chunk.emit_u8(INHERIT),
             Opcode::Print => chunk.emit_u8(PRINT),
             Opcode::Return => chunk.emit_u8(RETURN),
             Opcode::Pop => chunk.emit_u8(POP),
@@ -169,12 +195,28 @@ impl Opcode {
                 chunk.emit_u8(LOAD_STRING);
                 chunk.emit_u32(symbol.raw());
             }
+            Opcode::LoadClass(index) => {
+                chunk.emit_u8(LOAD_CLASS);
+                chunk.emit_u32(index.to_u32());
+            }
+            Opcode::GetSuper(symbol) => {
+                chunk.emit_u8(GET_SUPER);
+                chunk.emit_u32(symbol.raw());
+            }
             Opcode::SetGlobal(symbol) => {
                 chunk.emit_u8(SET_GLOBAL);
                 chunk.emit_u32(symbol.raw());
             }
             Opcode::GetGlobal(symbol) => {
                 chunk.emit_u8(GET_GLOBAL);
+                chunk.emit_u32(symbol.raw());
+            }
+            Opcode::SetProperty(symbol) => {
+                chunk.emit_u8(SET_PROPERTY);
+                chunk.emit_u32(symbol.raw());
+            }
+            Opcode::GetProperty(symbol) => {
+                chunk.emit_u8(GET_PROPERTY);
                 chunk.emit_u32(symbol.raw());
             }
             Opcode::GetLocal(slot) => {
@@ -251,6 +293,8 @@ impl Opcode {
     pub fn decode(stream: &[u8]) -> Option<Opcode> {
         let mut stream = ByteIterator::from(stream);
         match stream.next_u8()? {
+            ATTACH_METHOD => Some(Opcode::AttachMethod),
+            INHERIT => Some(Opcode::Inherit),
             PRINT => Some(Opcode::Print),
             RETURN => Some(Opcode::Return),
             POP => Some(Opcode::Pop),
@@ -282,9 +326,17 @@ impl Opcode {
                 let index = stream.next_u32()?;
                 Some(Opcode::LoadClosure(index.into()))
             }
+            LOAD_CLASS => {
+                let index = stream.next_u32()?;
+                Some(Opcode::LoadClass(index.into()))
+            }
             LOAD_STRING => {
                 let symbol = stream.next_u32()?;
                 Some(Opcode::LoadString(symbol.into()))
+            }
+            GET_SUPER => {
+                let symbol = stream.next_u32()?;
+                Some(Opcode::GetSuper(symbol.into()))
             }
             GET_GLOBAL => {
                 let symbol = stream.next_u32()?;
@@ -293,6 +345,14 @@ impl Opcode {
             SET_GLOBAL => {
                 let symbol = stream.next_u32()?;
                 Some(Opcode::SetGlobal(symbol.into()))
+            }
+            GET_PROPERTY => {
+                let symbol = stream.next_u32()?;
+                Some(Opcode::GetProperty(symbol.into()))
+            }
+            SET_PROPERTY => {
+                let symbol = stream.next_u32()?;
+                Some(Opcode::SetProperty(symbol.into()))
             }
             GET_LOCAL => {
                 let slot = stream.next_u32()?;
@@ -336,6 +396,8 @@ impl Opcode {
         address: usize,
     ) -> Result<(), fmt::Error> {
         match self {
+            Opcode::AttachMethod => write!(buffer, "attachmethod"),
+            Opcode::Inherit => write!(buffer, "inherit"),
             Opcode::Print => write!(buffer, "print"),
             Opcode::Return => write!(buffer, "return"),
             Opcode::Pop => write!(buffer, "pop"),
@@ -369,28 +431,26 @@ impl Opcode {
                 let name = resolver.resolve_string(closure.name).ok_or(fmt::Error)?;
                 write!(buffer, "loadclosure {name}")?;
 
-                if !closure.upvalues.is_empty() {
-                    writeln!(buffer)?;
-                    for (line_index, upvalue) in closure.upvalues.iter().enumerate() {
-                        match *upvalue {
-                            Upvalue::Local(slot) => {
-                                write!(buffer, "{prefix}local {}", slot.to_u32())?;
-                            }
-                            Upvalue::Upvalue(upvalue_index) => {
-                                write!(buffer, "{prefix}upvalue {}", upvalue_index.to_u32())?;
-                            }
-                        }
-                        if line_index < (closure.upvalues.len() - 1) {
-                            writeln!(buffer)?;
-                        }
-                    }
-                }
-
+                format_closure(buffer, prefix, closure)?;
                 Ok(())
             }
             Opcode::LoadString(symbol) => write!(
                 buffer,
                 "loadstring \"{}\"",
+                resolver.resolve_string(symbol).ok_or(fmt::Error)?
+            ),
+            Opcode::LoadClass(index) => {
+                let class = resolver.resolve_class(index).ok_or(fmt::Error)?;
+                write!(
+                    buffer,
+                    "loadclass {}",
+                    resolver.resolve_string(class.name).ok_or(fmt::Error)?
+                )?;
+                Ok(())
+            }
+            Opcode::GetSuper(symbol) => write!(
+                buffer,
+                "getsuper {}",
                 resolver.resolve_string(symbol).ok_or(fmt::Error)?
             ),
             Opcode::GetGlobal(symbol) => write!(
@@ -401,6 +461,16 @@ impl Opcode {
             Opcode::SetGlobal(symbol) => write!(
                 buffer,
                 "setglob {}",
+                resolver.resolve_string(symbol).ok_or(fmt::Error)?
+            ),
+            Opcode::GetProperty(symbol) => write!(
+                buffer,
+                "getprop {}",
+                resolver.resolve_string(symbol).ok_or(fmt::Error)?
+            ),
+            Opcode::SetProperty(symbol) => write!(
+                buffer,
+                "setprop {}",
                 resolver.resolve_string(symbol).ok_or(fmt::Error)?
             ),
             Opcode::GetLocal(slot) => write!(buffer, "getlocal ${}", slot.to_u32()),
@@ -424,4 +494,28 @@ impl Opcode {
             ),
         }
     }
+}
+
+fn format_closure(
+    buffer: &mut impl fmt::Write,
+    prefix: &str,
+    closure: &Closure,
+) -> Result<(), fmt::Error> {
+    if !closure.upvalues.is_empty() {
+        writeln!(buffer)?;
+        for (line_index, upvalue) in closure.upvalues.iter().enumerate() {
+            match *upvalue {
+                Upvalue::Local(slot) => {
+                    write!(buffer, "{prefix}local {}", slot.to_u32())?;
+                }
+                Upvalue::Upvalue(upvalue_index) => {
+                    write!(buffer, "{prefix}upvalue {}", upvalue_index.to_u32())?;
+                }
+            }
+            if line_index < (closure.upvalues.len() - 1) {
+                writeln!(buffer)?;
+            }
+        }
+    }
+    Ok(())
 }

@@ -7,10 +7,12 @@ use prox_bytecode::StackSlot;
 use prox_bytecode::UpvalueIndex;
 use prox_bytecode::chunk::Chunk;
 use prox_bytecode::chunk::ChunkId;
+use prox_bytecode::class::Class;
 use prox_bytecode::function::Closure;
 use prox_bytecode::function::Upvalue;
 use prox_bytecode::is_jump_opcode;
 use prox_bytecode::pool::ConstantInterner;
+use prox_interner::ConstantIndex;
 use prox_interner::{Interner, Symbol};
 use prox_lexer::SourceCode;
 use prox_parser::ast::Ast;
@@ -245,16 +247,37 @@ struct Local {
     is_captured: bool,
 }
 
+enum FunctionKind {
+    Function,
+    Method,
+}
+
+struct CompilableClosure<'params> {
+    name: Symbol,
+    kind: FunctionKind,
+    parameters: &'params [u32],
+    body: NodeIndex,
+    span: Span,
+}
+
 struct CompilerContext {
-    locals: Vec<Local>,
+    locals: Vec1<Local>,
     depth: usize,
     upvalues: Vec<Upvalue>,
 }
 
 impl CompilerContext {
-    const fn new() -> Self {
+    fn new(kind: &FunctionKind, interner: &mut ConstantInterner) -> Self {
+        let base_local = match *kind {
+            FunctionKind::Function => interner.intern(""),
+            FunctionKind::Method => interner.intern("this"),
+        };
         Self {
-            locals: Vec::new(),
+            locals: Vec1::from_one(Local {
+                name: base_local,
+                depth: 0,
+                is_captured: false,
+            }),
             upvalues: Vec::new(),
             depth: 0,
         }
@@ -288,7 +311,7 @@ impl CompilerContext {
             depth: self.depth,
             is_captured: false,
         });
-        StackSlot::try_from(self.locals.len() - 1).unwrap()
+        StackSlot::try_from(usize::from(self.locals.len()) - 1).unwrap()
     }
 
     fn add_upvalue(&mut self, upvalue: Upvalue) -> u32 {
@@ -299,13 +322,11 @@ impl CompilerContext {
         u32::try_from(self.upvalues.len() - 1).expect("not supporting upvalue indices beyond 2^32.")
     }
 
-    // NOTE(pavyamsiri): We use `index + 1` to reserve stack slot 0 for the VM to use as the call frame slot.
-    /// Resolve a local variable.
     fn resolve_local(&self, name: Symbol) -> Option<StackSlot> {
         for (index, local) in self.locals.iter().enumerate().rev() {
             if local.name == name {
                 return Some(
-                    (index + 1)
+                    index
                         .try_into()
                         .expect("not supporting stack sizes beyond 2^32 values."),
                 );
@@ -322,10 +343,12 @@ impl CompilerContext {
         span: Span,
     ) -> Result<(), CompilationError> {
         if self.depth > 0 {
+            tracing::debug!("Assigning {name:?} to local depth {}", self.depth);
             self.add_local(name);
         }
         // Global scope
         else {
+            tracing::debug!("Assigning {name:?} to global");
             pool.get_mut(current_chunk, span)?
                 .emit_opcode(Opcode::SetGlobal(name), span);
         }
@@ -338,16 +361,12 @@ struct Compiler {
 }
 
 impl Compiler {
-    fn begin_context(&mut self) {
-        self.contexts.push(CompilerContext::new());
+    fn begin_context(&mut self, kind: &FunctionKind, interner: &mut ConstantInterner) {
+        self.contexts.push(CompilerContext::new(kind, interner));
     }
 
     fn end_context(&mut self) -> Option<CompilerContext> {
         self.contexts.pop_if_many().or_none()
-    }
-
-    fn get_context(&self, index: usize) -> Option<&CompilerContext> {
-        self.contexts.get(index)
     }
 
     fn get_context_mut(&mut self, index: usize) -> Option<&mut CompilerContext> {
@@ -388,8 +407,6 @@ impl Compiler {
             .assign_variable(pool, current_chunk, name, span)
     }
 
-    // TODO(pavyamsiri): This is wrong because we don't deal with upvalues.
-    /// Resolve a local variable.
     fn resolve_local(&self, name: Symbol) -> Option<StackSlot> {
         self.current_context().resolve_local(name)
     }
@@ -409,7 +426,7 @@ impl Compiler {
                 self.get_context_mut(context_index)
                     .expect("must be in bounds")
                     .locals
-                    .get_mut(slot.to_usize() - 1)
+                    .get_mut(slot.to_usize())
                     .expect("stack slot is guaranteed in bounds.")
                     .is_captured = true;
 
@@ -435,9 +452,9 @@ impl Compiler {
 }
 
 impl Compiler {
-    fn new() -> Self {
+    fn new(interner: &mut ConstantInterner) -> Self {
         Self {
-            contexts: Vec1::from_one(CompilerContext::new()),
+            contexts: Vec1::from_one(CompilerContext::new(&FunctionKind::Function, interner)),
         }
     }
 
@@ -467,11 +484,13 @@ impl Compiler {
 
         match tag {
             NodeTag::Program => self.compile_program(pool, current_chunk, ast, interner, index),
-            NodeTag::StmtFnDecl => self.compile_fn_decl(pool, current_chunk, ast, interner, index),
             NodeTag::StmtVarDecl => {
                 self.compile_var_decl(pool, current_chunk, ast, interner, index)
             }
-            NodeTag::StmtClassDecl => todo!(),
+            NodeTag::StmtFnDecl => self.compile_fn_decl(pool, current_chunk, ast, interner, index),
+            NodeTag::StmtClassDecl => {
+                self.compile_class_decl(pool, current_chunk, ast, interner, index)
+            }
             NodeTag::Block => self.compile_block(pool, current_chunk, ast, interner, index),
             NodeTag::If => self.compile_if(pool, current_chunk, ast, interner, index),
             NodeTag::Return => self.compile_return(pool, current_chunk, ast, interner, index),
@@ -486,15 +505,20 @@ impl Compiler {
             NodeTag::Assignment => {
                 self.compile_assignment(pool, current_chunk, ast, interner, index)
             }
-            NodeTag::SuperMethod => todo!(),
-            NodeTag::FieldGet => todo!(),
-            NodeTag::FieldSet => todo!(),
+            NodeTag::SuperMethod => {
+                self.compile_get_super(pool, current_chunk, ast, interner, index)
+            }
+            NodeTag::FieldGet => Self::compile_property_get(pool, current_chunk, ast, index),
+            NodeTag::FieldSet => Self::compile_property_set(pool, current_chunk, ast, index),
             NodeTag::Ident => self.compile_identifier(pool, current_chunk, ast, index),
             NodeTag::StringLiteral => Self::compile_string(pool, current_chunk, ast, index),
             NodeTag::Number => Self::compile_number(pool, current_chunk, ast, interner, index),
             NodeTag::Boolean => Self::compile_bool(pool, current_chunk, ast, index),
             NodeTag::Nil => Self::compile_nil(pool, current_chunk, ast, index),
-            NodeTag::Error => todo!(),
+            NodeTag::Error => Err(CompilationError {
+                kind: CompilationErrorKind::NullNode,
+                span: ast.span(index),
+            }),
         }
     }
 
@@ -914,7 +938,52 @@ impl Compiler {
             BinaryOp::Ge => handle_binary!(Opcode::Ge),
             BinaryOp::Ne => handle_binary!(Opcode::Ne),
             BinaryOp::Eq => handle_binary!(Opcode::Eq),
-            BinaryOp::And | BinaryOp::Or => todo!("need jumps to do short circuiting."),
+            BinaryOp::Or => {
+                const DEFAULT_OFFSET: InstructionOffset = InstructionOffset::from_i32(-0x1211);
+                self.compile_stmt(pool, current_chunk, ast, interner, lhs)?;
+                // If false then skip to rhs evaluation.
+                let jump_to_rhs = {
+                    let current_chunk = pool.get_mut(current_chunk, span)?;
+                    current_chunk.emit_opcode(Opcode::JumpIfFalse(DEFAULT_OFFSET), span)
+                };
+                pool.get_mut(current_chunk, span)?
+                    .emit_opcode(Opcode::Pop, span);
+                // Otherwise unconditional jump to end.
+                let jump_to_end = {
+                    let current_chunk = pool.get_mut(current_chunk, span)?;
+                    current_chunk.emit_opcode(Opcode::Jump(DEFAULT_OFFSET), span)
+                };
+                pool.get_mut(current_chunk, span)?
+                    .patch_jump(jump_to_rhs, span)?;
+                self.compile_stmt(pool, current_chunk, ast, interner, rhs)?;
+                pool.get_mut(current_chunk, span)?
+                    .emit_opcode(Opcode::Pop, span);
+                pool.get_mut(current_chunk, span)?
+                    .patch_jump(jump_to_end, span)?;
+            }
+            BinaryOp::And => {
+                const DEFAULT_OFFSET: InstructionOffset = InstructionOffset::from_i32(-0x018AB);
+                self.compile_stmt(pool, current_chunk, ast, interner, lhs)?;
+                // If true then skip to rhs evaluation.
+                let jump_to_rhs = {
+                    let current_chunk = pool.get_mut(current_chunk, span)?;
+                    current_chunk.emit_opcode(Opcode::JumpIfFalse(DEFAULT_OFFSET), span)
+                };
+                // Otherwise unconditional jump to end.
+                let jump_to_end = {
+                    let current_chunk = pool.get_mut(current_chunk, span)?;
+                    current_chunk.emit_opcode(Opcode::Jump(DEFAULT_OFFSET), span)
+                };
+                pool.get_mut(current_chunk, span)?
+                    .patch_jump(jump_to_rhs, span)?;
+                pool.get_mut(current_chunk, span)?
+                    .emit_opcode(Opcode::Pop, span);
+                self.compile_stmt(pool, current_chunk, ast, interner, rhs)?;
+                pool.get_mut(current_chunk, span)?
+                    .emit_opcode(Opcode::Pop, span);
+                pool.get_mut(current_chunk, span)?
+                    .patch_jump(jump_to_end, span)?;
+            }
         }
 
         Ok(())
@@ -947,6 +1016,39 @@ impl Compiler {
         Ok(())
     }
 
+    /// Compile a closure.
+    fn compile_closure(
+        &mut self,
+        pool: &mut ChunkPoolBuilder,
+        ast: &Ast,
+        interner: &mut ConstantInterner,
+        closure: &CompilableClosure,
+    ) -> Result<ConstantIndex<Closure>, CompilationError> {
+        let sub_chunk = pool.allocate(closure.name, closure.span)?;
+
+        self.begin_context(&closure.kind, interner);
+        self.begin_scope();
+
+        // Define parameters
+        for parameter in closure.parameters.iter().copied() {
+            let param_symbol = Symbol::from(parameter);
+            self.add_local(param_symbol);
+        }
+
+        self.compile_stmt(pool, sub_chunk, ast, interner, closure.body)?;
+        let context = self.end_context().expect("popping a context we pushed on.");
+
+        let func = Closure {
+            name: closure.name,
+            chunk: sub_chunk,
+            arity: u8::try_from(closure.parameters.len())
+                .expect("can't have more than 255 parameters."),
+            upvalues: context.upvalues,
+        };
+
+        Ok(interner.add_closure(func))
+    }
+
     /// Compile a function declaration.
     fn compile_fn_decl(
         &mut self,
@@ -958,35 +1060,91 @@ impl Compiler {
     ) -> Result<(), CompilationError> {
         let span = ast.span(index);
         let fn_name = ast.data(index).symbol();
-        let (_, block_index, parameters) = ast.fn_decl_extra(index);
+        let (is_method, block_index, parameters) = ast.fn_decl_extra(index);
+        assert!(!is_method, "should not be a method.");
         let block_index = convert_node!(block_index => span)?;
 
-        let sub_chunk = pool.allocate(fn_name, span)?;
-
-        self.begin_context();
-        self.begin_scope();
-
-        // Define parameters
-        for parameter in parameters.iter().copied() {
-            let param_symbol = Symbol::from(parameter);
-            self.add_local(param_symbol);
-        }
-
-        self.compile_stmt(pool, sub_chunk, ast, interner, block_index)?;
-        let context = self.end_context().expect("popping a context we pushed on.");
-
-        let func = Closure {
-            name: fn_name,
-            chunk: sub_chunk,
-            arity: u8::try_from(parameters.len()).expect("can't have more than 255 parameters."),
-            upvalues: context.upvalues,
-        };
-
-        let closure_index = interner.add_closure(func);
+        let closure_index = self.compile_closure(
+            pool,
+            ast,
+            interner,
+            &CompilableClosure {
+                name: fn_name,
+                kind: FunctionKind::Function,
+                parameters,
+                body: block_index,
+                span,
+            },
+        )?;
         pool.get_mut(current_chunk, span)?
             .emit_opcode(Opcode::LoadClosure(closure_index), span);
 
         self.assign_variable(pool, current_chunk, fn_name, span)?;
+
+        Ok(())
+    }
+
+    /// Compile a class declaration.
+    fn compile_class_decl(
+        &mut self,
+        pool: &mut ChunkPoolBuilder,
+        current_chunk: ChunkId,
+        ast: &Ast,
+        interner: &mut ConstantInterner,
+        index: NodeIndex,
+    ) -> Result<(), CompilationError> {
+        let span = ast.span(index);
+        let class_name = ast.data(index).symbol();
+        let (methods, super_class) = ast.class_decl_extra(index);
+
+        let class = Class { name: class_name };
+        let class_index = interner.add_class(class);
+        pool.get_mut(current_chunk, span)?
+            .emit_opcode(Opcode::LoadClass(class_index), span);
+        self.assign_variable(pool, current_chunk, class_name, span)?;
+
+        if let Some(super_class) = super_class {
+            let super_class_name = ast.data(super_class).symbol();
+            self.push_identifier(pool, current_chunk, super_class_name, span)?;
+
+            self.begin_scope();
+            self.add_local(ast.kw_super());
+            self.push_identifier(pool, current_chunk, class_name, span)?;
+            pool.get_mut(current_chunk, span)?
+                .emit_opcode(Opcode::Inherit, span);
+        }
+
+        self.push_identifier(pool, current_chunk, class_name, span)?;
+
+        for method in methods {
+            let method_node = convert_node!(*method => span)?;
+            let method_name = ast.data(method_node).symbol();
+            let method_span = ast.span(method_node);
+            let (is_method, block, parameters) = ast.fn_decl_extra(method_node);
+            assert!(is_method, "should be a method.");
+            let method_index = self.compile_closure(
+                pool,
+                ast,
+                interner,
+                &CompilableClosure {
+                    name: method_name,
+                    kind: FunctionKind::Method,
+                    parameters,
+                    body: convert_node!(block => method_span)?,
+                    span: method_span,
+                },
+            )?;
+
+            pool.get_mut(current_chunk, span)?
+                .emit_opcode(Opcode::LoadClosure(method_index), span);
+
+            pool.get_mut(current_chunk, span)?
+                .emit_opcode(Opcode::AttachMethod, span);
+        }
+
+        if super_class.is_some() {
+            self.end_scope(pool.get_mut(current_chunk, span)?, span);
+        }
 
         Ok(())
     }
@@ -1013,6 +1171,59 @@ impl Compiler {
 
         // Local scope
         self.assign_variable(pool, current_chunk, name, span)?;
+        Ok(())
+    }
+
+    /// Compile get super.
+    fn compile_get_super(
+        &mut self,
+        pool: &mut ChunkPoolBuilder,
+        current_chunk: ChunkId,
+        ast: &Ast,
+        interner: &mut ConstantInterner,
+        index: NodeIndex,
+    ) -> Result<(), CompilationError> {
+        let data = ast.data(index);
+        let span = ast.span(index);
+        let name = data.symbol();
+
+        self.push_identifier(pool, current_chunk, interner.intern("this"), span)?;
+        self.push_identifier(pool, current_chunk, interner.intern("super"), span)?;
+        pool.get_mut(current_chunk, span)?
+            .emit_opcode(Opcode::GetSuper(name), span);
+
+        Ok(())
+    }
+
+    /// Compile a property get.
+    fn compile_property_get(
+        pool: &mut ChunkPoolBuilder,
+        current_chunk: ChunkId,
+        ast: &Ast,
+        index: NodeIndex,
+    ) -> Result<(), CompilationError> {
+        let data = ast.data(index);
+        let span = ast.span(index);
+        let name = data.symbol();
+
+        let chunk = pool.get_mut(current_chunk, span)?;
+        chunk.emit_opcode(Opcode::GetProperty(name), span);
+        Ok(())
+    }
+
+    /// Compile a property set.
+    fn compile_property_set(
+        pool: &mut ChunkPoolBuilder,
+        current_chunk: ChunkId,
+        ast: &Ast,
+        index: NodeIndex,
+    ) -> Result<(), CompilationError> {
+        let data = ast.data(index);
+        let span = ast.span(index);
+        let name = data.symbol();
+
+        let chunk = pool.get_mut(current_chunk, span)?;
+        chunk.emit_opcode(Opcode::SetProperty(name), span);
         Ok(())
     }
 
@@ -1056,6 +1267,19 @@ impl Compiler {
         let span = ast.span(index);
         let name = data.symbol();
 
+        self.push_identifier(pool, current_chunk, name, span)?;
+
+        Ok(())
+    }
+
+    /// Push a variable onto the stack.
+    fn push_identifier(
+        &mut self,
+        pool: &mut ChunkPoolBuilder,
+        current_chunk: ChunkId,
+        name: Symbol,
+        span: Span,
+    ) -> Result<(), CompilationError> {
         let chunk = pool.get_mut(current_chunk, span)?;
         if let Some(slot) = self.resolve_local(name) {
             chunk.emit_opcode(Opcode::GetLocal(slot), span);
@@ -1064,7 +1288,6 @@ impl Compiler {
         } else {
             chunk.emit_opcode(Opcode::GetGlobal(name), span);
         }
-
         Ok(())
     }
 }
@@ -1082,5 +1305,5 @@ pub fn compile(ast: &Ast, interner: Interner) -> Result<Compilation, Compilation
     let program_symbol = interner.intern("program");
     let pool = ChunkPoolBuilder::new(program_symbol);
     tracing::debug!("Compiling root {root:?}...");
-    Compiler::new().compile(pool, ast, interner)
+    Compiler::new(&mut interner).compile(pool, ast, interner)
 }

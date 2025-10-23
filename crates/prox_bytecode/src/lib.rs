@@ -1,4 +1,5 @@
 pub mod chunk;
+pub mod class;
 pub mod function;
 mod index;
 mod opcode;

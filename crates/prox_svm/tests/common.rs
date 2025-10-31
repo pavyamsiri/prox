@@ -47,7 +47,7 @@ fn run_interpreter(text: &str) -> String {
         Ok(()) => context.flush(),
         Err(err) => {
             let mut flushed_buffer = context.flush();
-            err.format(text, &mut flushed_buffer, unit.resolver.get_interner())
+            err.format(&mut flushed_buffer, unit.resolver.get_interner())
                 .unwrap();
             flushed_buffer.push('\n');
             flushed_buffer

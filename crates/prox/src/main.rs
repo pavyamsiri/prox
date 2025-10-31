@@ -283,7 +283,7 @@ fn interpret(text: &str, path: &Path) -> bool {
         Ok(()) => {}
         Err(err) => {
             let mut err_buffer = String::new();
-            err.format(text, &mut err_buffer, unit.resolver.get_interner())
+            err.format(&mut err_buffer, unit.resolver.get_interner())
                 .expect("not handling buffer write failure.");
             err_buffer.push('\n');
             println!("{err_buffer}");

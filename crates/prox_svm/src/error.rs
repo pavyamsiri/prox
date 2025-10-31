@@ -1,3 +1,8 @@
+//! Errors encountered during runtime.
+
+use crate::gc::AllocatorError;
+use crate::gc::Generation;
+use core::convert;
 use core::fmt;
 use prox_interner::{Interner, Symbol};
 use prox_span::Span;
@@ -52,8 +57,36 @@ pub enum RuntimeErrorKind {
     InvalidCallFrame,
     /// Open upvalue link list contains closed upvalues.
     InvalidOpenUpvalue,
-    /// Attempted to dereference an arena index that is invalid..
-    InvalidDereference,
+    /// Attempted to resolve a constant using an invalid symbol.
+    InvalidSymbol {
+        /// The invalid symbol.
+        symbol: u32,
+        /// The name of the interner.
+        name: &'static str,
+    },
+    /// Attempted to dereference an arena index that is invalid; index is out of bounds.
+    OutOfBoundsDereference {
+        /// The out of bounds index.
+        index: usize,
+        /// The name of the arena.
+        name: &'static str,
+    },
+    /// Attempted to dereference an arena index that is invalid; entry is free.
+    FreeDereference {
+        /// The index to the free entry.
+        index: usize,
+        /// The name of the arena.
+        name: &'static str,
+    },
+    /// Attempted to dereference an arena index that is invalid; index's generation is out of date.
+    WrongGenerationDereference {
+        /// The entry's generation.
+        expected: Generation,
+        /// The handle's generation.
+        actual: Generation,
+        /// The name of the arena.
+        name: &'static str,
+    },
     /// Attempted to dereference a chunk but got nothing..
     InvalidChunkDereference,
     /// Attempted to attach a non-method value to a class.
@@ -75,11 +108,9 @@ impl RuntimeError {
     /// This function will error if it can not write into the buffer.
     pub fn format(
         &self,
-        source: &str,
         buffer: &mut impl fmt::Write,
         interner: &Interner,
     ) -> Result<(), fmt::Error> {
-        let lexeme = &source[self.span.range()];
         match self.kind {
             RuntimeErrorKind::InvalidAccess(symbol) => {
                 let invalid_name = interner.resolve(symbol).ok_or(fmt::Error)?;
@@ -116,13 +147,61 @@ impl RuntimeError {
             RuntimeErrorKind::InvalidClassAttach => write!(buffer, "Invalid class to attach to."),
             RuntimeErrorKind::InvalidCallFrame => write!(buffer, "Invalid call frame."),
             RuntimeErrorKind::InvalidOpenUpvalue => write!(buffer, "Invalid open upvalue."),
-            RuntimeErrorKind::InvalidDereference => write!(buffer, "Invalid dereference."),
             RuntimeErrorKind::InvalidChunkDereference => {
                 write!(buffer, "Invalid chunk dereference.")
             }
             RuntimeErrorKind::EmptyStack => write!(buffer, "Empty stack."),
             RuntimeErrorKind::EmptyCallStack => write!(buffer, "Empty call stack."),
             RuntimeErrorKind::Io => write!(buffer, "Failed IO operation."),
+            RuntimeErrorKind::OutOfBoundsDereference { index, name } => {
+                write!(
+                    buffer,
+                    "{name}: Index {index} is an out of bounds dereference."
+                )
+            }
+            RuntimeErrorKind::FreeDereference { index, name } => {
+                write!(
+                    buffer,
+                    "{name}: Index {index} is a dereference of a freed entry."
+                )
+            }
+            RuntimeErrorKind::WrongGenerationDereference {
+                expected,
+                actual,
+                name,
+            } => {
+                write!(
+                    buffer,
+                    "{name}: Dereference with outdated handle. Expected {} but got {}.",
+                    expected.raw(),
+                    actual.raw(),
+                )
+            }
+            RuntimeErrorKind::InvalidSymbol { symbol, name } => {
+                write!(buffer, "{name}: Failed to resolve the symbol {symbol}.")
+            }
+        }
+    }
+}
+
+impl convert::From<AllocatorError> for RuntimeErrorKind {
+    fn from(value: AllocatorError) -> Self {
+        match value {
+            AllocatorError::OutOfBounds { index, name } => {
+                RuntimeErrorKind::OutOfBoundsDereference { index, name }
+            }
+            AllocatorError::WrongGeneration {
+                expected,
+                actual,
+                name,
+            } => RuntimeErrorKind::WrongGenerationDereference {
+                expected,
+                actual,
+                name,
+            },
+            AllocatorError::Free { index, name } => {
+                RuntimeErrorKind::FreeDereference { index, name }
+            }
         }
     }
 }

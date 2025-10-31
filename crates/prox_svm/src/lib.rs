@@ -1,17 +1,26 @@
-mod error;
+//! A stack-based virtual machine implementation.
+
+extern crate alloc;
+
+/// Runtime errors.
+pub mod error;
+/// Allocator and garbage collector.
 mod gc;
+/// The IO interface.
 pub mod io;
+/// The VM values.
 mod value;
 
 use crate::{
     error::{RuntimeError, RuntimeErrorKind},
-    gc::{ArenaIndex, ValueAllocator},
+    gc::{ArenaIndex, ObjectAllocator},
     io::IoContext,
     value::{
-        Class, Closure, Instance, Method, Upvalue,
-        native::{Clock, NativeFunction as _},
+        Class, Closure, Instance, Method, Trace as _, Upvalue,
+        native::{Clock, NativeFunction, Stringify},
     },
 };
+use alloc::rc::Rc;
 use prox_bytecode::{
     Opcode,
     chunk::{Chunk, ChunkId},
@@ -23,62 +32,91 @@ use prox_span::Span;
 use std::collections::{HashMap, hash_map::Entry};
 use value::Value;
 
+/// The control flow of the VM execution.
 #[derive(Debug)]
 enum ControlFlow {
+    /// Continue execution.
     Continue,
+    /// Finish execution.
     Done,
 }
 
+/// A call frame.
 #[derive(Debug, Clone)]
 struct CallFrame {
+    /// The instruction pointer.
     ip: usize,
+    /// The call frame's closure.
     closure: ArenaIndex<Closure>,
+    /// The base stack slot for the call frame.
     base: StackSlot,
 }
 
+/// The virtual machine.
 struct Vm {
+    /// The call stack.
     call_stack: Vec<CallFrame>,
+    /// The value stack.
     stack: Vec<Value>,
+    /// The globals.
     globals: HashMap<Symbol, Value>,
-
+    /// The open upvalues that may need to be closed.
     open_upvalues: Option<ArenaIndex<Upvalue>>,
+    /// The current span.
+    current_span: Span,
 }
 
+/// Use when resolving a handle using the allocator to return the correct runtime error.
 macro_rules! dereference {
     ($option:expr => $span:expr) => {
-        $option.ok_or(RuntimeError {
-            kind: RuntimeErrorKind::InvalidDereference,
+        $option.map_err(|kind| RuntimeError {
+            kind: kind.into(),
             span: $span,
         })
     };
 }
 
 impl Vm {
+    /// Initialise the virtual machine.
     fn new() -> Self {
         Self {
             call_stack: Vec::new(),
             stack: Vec::new(),
             globals: HashMap::new(),
             open_upvalues: None,
+            current_span: Span {
+                start: 0,
+                length: 1,
+            },
         }
     }
 
+    /// Add a builtin.
+    fn add_builtin(
+        &mut self,
+        allocator: &mut ObjectAllocator,
+        code: &mut Compilation,
+        func: Rc<dyn NativeFunction>,
+    ) {
+        let sym = code.resolver.intern(func.name());
+        self.globals
+            .insert(sym, Value::Native(allocator.make_native(func)));
+    }
+
+    /// Run the virtual machine on the given code.
     fn run(
         &mut self,
         context: &mut impl IoContext,
         code: &mut Compilation,
     ) -> Result<(), RuntimeError> {
-        let mut allocator = ValueAllocator::new();
-        // Native
+        let mut allocator = ObjectAllocator::new();
+        // Add builtins.
         {
-            let clock = Clock;
-            let clock_sym = code.resolver.intern(clock.name());
-            self.globals.insert(
-                clock_sym,
-                Value::Native(allocator.make_native(Box::new(clock))),
-            );
+            self.add_builtin(&mut allocator, code, Rc::new(Clock));
+            self.add_builtin(&mut allocator, code, Rc::new(Stringify));
         }
 
+        // Set up stack.
         let script_symbol = code.resolver.intern("script");
         let script = allocator.make_closure(Closure {
             name: script_symbol,
@@ -91,26 +129,36 @@ impl Vm {
             closure: script,
             base: StackSlot::from(0),
         });
-
         self.stack.push(Value::Closure(script));
 
         self.debug_stack(&allocator, code);
-        let mut i = 0;
         while matches!(
             self.interpret(&mut allocator, context, code)?,
             ControlFlow::Continue
         ) {
             self.debug_stack(&allocator, code);
-            i += 1;
+            if allocator.should_collect() {
+                allocator.prepare_to_collect();
+                self.mark_roots(&mut allocator)?;
+                let freed = allocator.collect().map_err(|err| RuntimeError {
+                    kind: err.into(),
+                    span: self.current_span,
+                })?;
+                tracing::debug!("Freed {freed} bytes.");
+            }
         }
 
         Ok(())
     }
 
-    #[expect(clippy::too_many_lines, reason = "for now")]
+    #[expect(clippy::too_many_lines, reason = "this function is hard to decompose.")]
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "this function is hard to decompose."
+    )]
     fn interpret(
         &mut self,
-        allocator: &mut ValueAllocator,
+        allocator: &mut ObjectAllocator,
         context: &mut impl IoContext,
         code: &mut Compilation,
     ) -> Result<ControlFlow, RuntimeError> {
@@ -159,30 +207,24 @@ impl Vm {
 
         let call_frame = self.call_stack.last().cloned().ok_or(RuntimeError {
             kind: RuntimeErrorKind::EmptyCallStack,
-            span: Span {
-                start: 0,
-                length: 1,
-            },
+            span: self.current_span,
         })?;
         let base = call_frame.base;
         let chunk = {
             let closure = allocator
                 .resolve_closure(call_frame.closure)
-                .ok_or(RuntimeError {
-                    kind: RuntimeErrorKind::InvalidDereference,
-                    span: Span {
-                        start: 0,
-                        length: 1,
-                    },
+                .map_err(|kind| RuntimeError {
+                    kind: kind.into(),
+                    span: self.current_span,
                 })?;
             code.pool.get_chunk(closure.chunk).ok_or(RuntimeError {
                 kind: RuntimeErrorKind::InvalidChunkDereference,
-                span: Span {
-                    start: 0,
-                    length: 1,
-                },
+                span: self.current_span,
             })
         }?;
+
+        let (span, _) = self.get_span_and_line(chunk, call_frame.ip);
+        self.current_span = span;
 
         if chunk.at(call_frame.ip).is_empty() {
             return Ok(ControlFlow::Done);
@@ -193,27 +235,13 @@ impl Vm {
                 "Got no valid instruction from {:#?}",
                 &chunk.at(call_frame.ip)[0..10]
             );
-            let (span, _) = Self::get_span_and_line(chunk, call_frame.ip);
             return Err(RuntimeError {
                 kind: RuntimeErrorKind::Segfault,
                 span,
             });
         };
+        let next_instruction_offset = call_frame.ip + offset;
 
-        let (span, line) = Self::get_span_and_line(chunk, call_frame.ip);
-        {
-            let mut buffer = String::new();
-
-            inst.format(&mut buffer, "", &code.resolver, call_frame.ip)
-                .expect("not handling buffer write failure.");
-            tracing::debug!(
-                "Executing {:04x}: {buffer} with new offset = {offset} @ {}..{} [line {}]",
-                call_frame.ip,
-                span.start,
-                span.end(),
-                line,
-            );
-        }
         match inst {
             Opcode::Call(arity) => {
                 let slot = self.stack.len() - 1 - (arity as usize);
@@ -225,7 +253,7 @@ impl Vm {
                             StackSlot::try_from(slot).expect("stack can't grow past u32."),
                             arity,
                             index,
-                            call_frame.ip + offset,
+                            next_instruction_offset,
                             span,
                         );
                     }
@@ -237,12 +265,13 @@ impl Vm {
                             StackSlot::try_from(slot).expect("stack can't grow past u32."),
                             arity,
                             method.closure,
-                            call_frame.ip + offset,
+                            next_instruction_offset,
                             span,
                         );
                     }
                     Value::Native(index) => {
-                        let closure = dereference!(allocator.resolve_native(index) => span)?;
+                        let closure =
+                            Rc::clone(dereference!(allocator.resolve_native(index) => span)?);
                         if closure.arity() != arity {
                             return Err(RuntimeError {
                                 kind: RuntimeErrorKind::InvalidArgumentCount {
@@ -254,8 +283,9 @@ impl Vm {
                         }
                         let args = &self.stack[slot + 1..];
                         let result = closure
-                            .call(args)
+                            .call(allocator, &code.resolver, args)
                             .map_err(|kind| RuntimeError { kind, span })?;
+                        self.stack.truncate(slot);
                         self.stack.push(result);
                     }
                     Value::Class(index) => {
@@ -270,7 +300,7 @@ impl Vm {
                                 StackSlot::try_from(slot).expect("stack can't grow past u32."),
                                 arity,
                                 *init,
-                                call_frame.ip + offset,
+                                next_instruction_offset,
                                 span,
                             );
                         } else if arity != 0 {
@@ -311,7 +341,6 @@ impl Vm {
                 self.close_upvalues(allocator, popped_frame.base)
                     .map_err(|kind| RuntimeError { kind, span })?;
                 self.stack.truncate(popped_frame.base.to_usize());
-                tracing::debug!("returning {}", result.resolve(allocator, &code.resolver));
                 self.stack.push(result);
                 return Ok(ControlFlow::Continue);
             }
@@ -398,12 +427,12 @@ impl Vm {
                     kind: RuntimeErrorKind::InvalidAccess(symbol),
                     span,
                 })?;
-                self.stack.push(value.clone());
+                self.stack.push(*value);
             }
             Opcode::SetGlobal(symbol) => {
                 let value = pop_value!(span)?;
                 if let Entry::Occupied(mut entry) = self.globals.entry(symbol) {
-                    entry.insert(value.clone());
+                    entry.insert(value);
                     self.stack.push(value);
                 } else {
                     return Err(RuntimeError {
@@ -418,12 +447,12 @@ impl Vm {
             }
             Opcode::GetLocal(slot_offset) => {
                 let slot = slot_offset.to_usize() + base.to_usize();
-                self.stack.push(self.stack[slot].clone());
+                self.stack.push(self.stack[slot]);
             }
             Opcode::SetLocal(slot_offset) => {
                 let value = peek_value!(span)?;
                 let slot = slot_offset + base;
-                self.stack[slot.to_usize()] = value.clone();
+                self.stack[slot.to_usize()] = *value;
             }
             Opcode::GetProperty(symbol) => {
                 let Value::Instance(handle) = pop_value!(span)? else {
@@ -437,7 +466,7 @@ impl Vm {
                 let class = dereference!(allocator.resolve_class(instance.class) => span)?;
 
                 if let Some(value) = instance.fields.get(&symbol) {
-                    self.stack.push(value.clone());
+                    self.stack.push(*value);
                 } else if let Some(method) = class.methods.get(&symbol) {
                     let bound_method = allocator.make_method(Method {
                         closure: *method,
@@ -462,11 +491,10 @@ impl Vm {
 
                 let instance = dereference!(allocator.resolve_instance_mut(handle) => span)?;
 
-                instance.fields.insert(symbol, value.clone());
+                instance.fields.insert(symbol, value);
                 self.stack.push(value);
             }
             Opcode::GetUpvalue(upvalue_index) => {
-                tracing::debug!("current frame = {call_frame:#?}");
                 self.debug_stack(allocator, code);
                 let handle = call_frame.closure;
                 let closure = dereference!(allocator.resolve_closure(handle) => span)?;
@@ -474,17 +502,16 @@ impl Vm {
                     .resolve_upvalue(closure.upvalues[upvalue_index.to_usize()]) => span)?;
                 match *upvalue {
                     Upvalue::Open { slot, .. } => {
-                        let value = self.stack[slot.to_usize()].clone();
-                        tracing::debug!("Pushing {}", value.resolve(allocator, &code.resolver));
+                        let value = self.stack[slot.to_usize()];
                         self.stack.push(value);
                     }
                     Upvalue::Closed { ref value } => {
-                        self.stack.push(value.clone());
+                        self.stack.push(*value);
                     }
                 }
             }
             Opcode::SetUpvalue(upvalue_index) => {
-                let value = peek_value!(span)?.clone();
+                let value = peek_value!(span)?;
                 let Value::Closure(handle) = self.stack[call_frame.base.to_usize()] else {
                     return Err(RuntimeError {
                         kind: RuntimeErrorKind::InvalidCallFrame,
@@ -497,12 +524,12 @@ impl Vm {
                     => span)?;
                 match *upvalue {
                     Upvalue::Open { slot, .. } => {
-                        self.stack[slot.to_usize()] = value;
+                        self.stack[slot.to_usize()] = *value;
                     }
                     Upvalue::Closed {
                         value: ref mut closed_value,
                     } => {
-                        *closed_value = value;
+                        *closed_value = *value;
                     }
                 }
             }
@@ -615,16 +642,43 @@ impl Vm {
             Opcode::LoadTrue => self.stack.push(Value::Bool(true)),
             Opcode::LoadNil => self.stack.push(Value::Nil),
             Opcode::LoadNumber(index) => {
-                let number = dereference!(code.resolver.resolve_number(index) => span)?;
+                let number = code
+                    .resolver
+                    .resolve_number(index)
+                    .ok_or_else(|| RuntimeError {
+                        kind: RuntimeErrorKind::InvalidSymbol {
+                            symbol: index.to_u32(),
+                            name: "number",
+                        },
+                        span,
+                    })?;
                 self.stack.push(Value::Number(number));
             }
             Opcode::LoadString(symbol) => {
-                let string = dereference!(code.resolver.resolve_string(symbol) => span)?;
+                let string = code
+                    .resolver
+                    .resolve_string(symbol)
+                    .ok_or_else(|| RuntimeError {
+                        kind: RuntimeErrorKind::InvalidSymbol {
+                            symbol: symbol.raw(),
+                            name: "string",
+                        },
+                        span,
+                    })?;
                 self.stack
                     .push(Value::String(allocator.make_string(string)));
             }
             Opcode::LoadClosure(index) => {
-                let closure = dereference!(code.resolver.resolve_closure(index) => span)?;
+                let closure = code
+                    .resolver
+                    .resolve_closure(index)
+                    .ok_or_else(|| RuntimeError {
+                        kind: RuntimeErrorKind::InvalidSymbol {
+                            symbol: index.to_u32(),
+                            name: "closure",
+                        },
+                        span,
+                    })?;
                 let mut upvalues = Vec::with_capacity(closure.upvalues.len());
 
                 for upvalue in closure.upvalues.iter() {
@@ -650,7 +704,16 @@ impl Vm {
                     })));
             }
             Opcode::LoadClass(index) => {
-                let class = dereference!(code.resolver.resolve_class(index) => span)?;
+                let class = code
+                    .resolver
+                    .resolve_class(index)
+                    .ok_or_else(|| RuntimeError {
+                        kind: RuntimeErrorKind::InvalidSymbol {
+                            symbol: index.to_u32(),
+                            name: "class",
+                        },
+                        span,
+                    })?;
                 self.stack.push(Value::Class(allocator.make_class(Class {
                     name: class.name,
                     methods: HashMap::new(),
@@ -658,14 +721,15 @@ impl Vm {
             }
         }
 
-        current_frame!(span)?.ip = call_frame.ip + offset;
+        current_frame!(span)?.ip = next_instruction_offset;
 
         Ok(ControlFlow::Continue)
     }
 
+    /// Call a closure.
     fn call_closure(
         &mut self,
-        allocator: &ValueAllocator,
+        allocator: &ObjectAllocator,
         callee_slot: StackSlot,
         arity: u8,
         callee: ArenaIndex<Closure>,
@@ -698,9 +762,10 @@ impl Vm {
         Ok(ControlFlow::Continue)
     }
 
+    /// Capture a local upvalue.
     fn capture_upvalue(
         &mut self,
-        allocator: &mut ValueAllocator,
+        allocator: &mut ObjectAllocator,
         slot: StackSlot,
     ) -> Result<ArenaIndex<Upvalue>, RuntimeErrorKind> {
         let mut prev_upvalue_index = None;
@@ -710,9 +775,7 @@ impl Vm {
             let &Upvalue::Open {
                 slot: current_slot,
                 next,
-            } = allocator
-                .resolve_upvalue(current_index)
-                .ok_or(RuntimeErrorKind::InvalidDereference)?
+            } = allocator.resolve_upvalue(current_index)?
             else {
                 return Err(RuntimeErrorKind::InvalidOpenUpvalue);
             };
@@ -737,9 +800,7 @@ impl Vm {
         match prev_upvalue_index {
             // Update previous node's next pointer
             Some(prev_index) => {
-                let prev_upvalue = allocator
-                    .resolve_upvalue_mut(prev_index)
-                    .ok_or(RuntimeErrorKind::InvalidDereference)?;
+                let prev_upvalue = allocator.resolve_upvalue_mut(prev_index)?;
                 match *prev_upvalue {
                     Upvalue::Open { ref mut next, .. } => {
                         *next = Some(new_upvalue);
@@ -761,7 +822,7 @@ impl Vm {
     // Can probably take an iterator over the popped values to avoid clones.
     fn close_upvalues(
         &mut self,
-        allocator: &mut ValueAllocator,
+        allocator: &mut ObjectAllocator,
         last: StackSlot,
     ) -> Result<(), RuntimeErrorKind> {
         let mut current_upvalue_index = self.open_upvalues;
@@ -771,9 +832,7 @@ impl Vm {
                 let &Upvalue::Open {
                     slot: current_slot,
                     next,
-                } = allocator
-                    .resolve_upvalue(current_index)
-                    .ok_or(RuntimeErrorKind::InvalidDereference)?
+                } = allocator.resolve_upvalue(current_index)?
                 else {
                     return Err(RuntimeErrorKind::InvalidOpenUpvalue);
                 };
@@ -784,10 +843,9 @@ impl Vm {
                 (current_slot, next)
             };
 
-            let value = self.stack[current_slot.to_usize()].clone();
-            let current_upvalue @ &mut Upvalue::Open { .. } = allocator
-                .resolve_upvalue_mut(current_index)
-                .ok_or(RuntimeErrorKind::InvalidDereference)?
+            let value = self.stack[current_slot.to_usize()];
+            let current_upvalue @ &mut Upvalue::Open { .. } =
+                allocator.resolve_upvalue_mut(current_index)?
             else {
                 return Err(RuntimeErrorKind::InvalidOpenUpvalue);
             };
@@ -798,7 +856,8 @@ impl Vm {
         Ok(())
     }
 
-    fn debug_stack(&self, allocator: &ValueAllocator, code: &Compilation) {
+    /// Debug print the stack.
+    fn debug_stack(&self, allocator: &ObjectAllocator, code: &Compilation) {
         tracing::debug!("Stack");
         for (index, value) in self.stack.iter().enumerate() {
             tracing::debug!("\t#{index}: {}", value.resolve(allocator, &code.resolver));
@@ -812,7 +871,8 @@ impl Vm {
         tracing::debug!("{buffer}");
     }
 
-    fn get_span_and_line(chunk: &Chunk, ip: usize) -> (Span, usize) {
+    /// Return the span and line associated with the instruction at the given chunk.
+    fn get_span_and_line(&self, chunk: &Chunk, ip: usize) -> (Span, usize) {
         fn try_get(chunk: &Chunk, ip: usize) -> Option<(Span, usize)> {
             let index = chunk.starts.iter().position(|&start| start == ip)?;
             let span = chunk.spans.get(index)?;
@@ -821,13 +881,70 @@ impl Vm {
             Some((*span, *line))
         }
 
-        try_get(chunk, ip).unwrap_or((
-            Span {
-                start: 0,
-                length: 1,
-            },
-            1,
-        ))
+        try_get(chunk, ip).unwrap_or((self.current_span, 1))
+    }
+
+    /// Mark roots in allocator.
+    fn mark_roots(&self, allocator: &mut ObjectAllocator) -> Result<(), RuntimeError> {
+        // Call stack roots.
+        for frame in self.call_stack.iter() {
+            Value::Closure(frame.closure)
+                .mark(allocator)
+                .map_err(|err| RuntimeError {
+                    kind: err.into(),
+                    span: self.current_span,
+                })?;
+        }
+
+        // Global variable roots.
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "garbage collection need not be deterministic."
+        )]
+        for value in self.globals.values() {
+            value.mark(allocator).map_err(|err| RuntimeError {
+                kind: err.into(),
+                span: self.current_span,
+            })?;
+        }
+
+        // Stack roots.
+        for value in self.stack.iter() {
+            value.mark(allocator).map_err(|err| RuntimeError {
+                kind: err.into(),
+                span: self.current_span,
+            })?;
+        }
+
+        // Open upvalues.
+        let mut current_upvalue_index = self.open_upvalues;
+        while let Some(current_index) = current_upvalue_index {
+            Value::Upvalue(current_index)
+                .mark(allocator)
+                .map_err(|err| RuntimeError {
+                    kind: err.into(),
+                    span: self.current_span,
+                })?;
+            let next = {
+                let &Upvalue::Open { next, .. } = allocator
+                    .resolve_upvalue(current_index)
+                    .map_err(|kind| RuntimeError {
+                        kind: kind.into(),
+                        span: self.current_span,
+                    })?
+                else {
+                    return Err(RuntimeError {
+                        kind: RuntimeErrorKind::InvalidOpenUpvalue,
+                        span: self.current_span,
+                    });
+                };
+
+                next
+            };
+            current_upvalue_index = next;
+        }
+
+        Ok(())
     }
 }
 

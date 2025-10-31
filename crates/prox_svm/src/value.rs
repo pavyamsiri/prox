@@ -1,9 +1,13 @@
-pub mod native;
+extern crate alloc;
+
+/// The native function interface and builtins.
+pub(crate) mod native;
 
 use crate::{
     error::RuntimeErrorKind,
-    gc::{ArenaIndex, ValueAllocator as GcContext},
+    gc::{AllocatorError, ArenaIndex, MarkColor, ObjectAllocator},
 };
+use alloc::rc::Rc;
 use compact_str::CompactString;
 use core::fmt;
 use native::NativeFunction;
@@ -12,8 +16,8 @@ use prox_interner::Symbol;
 use std::collections::HashMap;
 
 /// A value.
-#[derive(Debug, Clone)]
-pub enum Value {
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Value {
     /// Numbers.
     Number(f64),
     /// Nil.
@@ -27,7 +31,7 @@ pub enum Value {
     /// Methods.
     Method(ArenaIndex<Method>),
     /// Native functions.
-    Native(ArenaIndex<Box<dyn NativeFunction>>),
+    Native(ArenaIndex<Rc<dyn NativeFunction>>),
     /// Upvalues.
     Upvalue(ArenaIndex<Upvalue>),
     /// Classes.
@@ -39,7 +43,7 @@ pub enum Value {
 impl Value {
     /// Execute add.
     pub(crate) fn add(
-        allocator: &mut GcContext,
+        allocator: &mut ObjectAllocator,
         lhs: &Self,
         rhs: &Self,
     ) -> Result<Value, RuntimeErrorKind> {
@@ -97,7 +101,7 @@ impl Value {
     }
 
     /// Evaluate equality.
-    pub(crate) fn eq(allocator: &GcContext, lhs: &Self, rhs: &Self) -> bool {
+    pub(crate) fn eq(allocator: &ObjectAllocator, lhs: &Self, rhs: &Self) -> bool {
         #[expect(
             clippy::pattern_type_mismatch,
             reason = "impossible to satisfy along with `needless_borrowed_reference`."
@@ -170,7 +174,7 @@ impl Value {
 
     /// Return whether the value is truthy.
     #[must_use]
-    pub const fn truthy(&self) -> bool {
+    pub(crate) const fn truthy(&self) -> bool {
         match *self {
             Value::Nil => false,
             Value::Bool(val) => val,
@@ -179,7 +183,7 @@ impl Value {
     }
 
     /// Evaluate numeric negation.
-    pub fn neg(&self) -> Result<Value, RuntimeErrorKind> {
+    pub(crate) fn neg(&self) -> Result<Value, RuntimeErrorKind> {
         #[expect(
             clippy::pattern_type_mismatch,
             reason = "impossible to satisfy along with `needless_borrowed_reference`."
@@ -194,7 +198,7 @@ impl Value {
 impl Value {
     pub(crate) const fn resolve<'value>(
         &'value self,
-        allocator: &'value GcContext,
+        allocator: &'value ObjectAllocator,
         interner: &'value ConstantInterner,
     ) -> ResolvedValue<'value> {
         ResolvedValue {
@@ -205,26 +209,122 @@ impl Value {
     }
 }
 
-pub trait Trace {
-    fn mark(&self, context: &mut GcContext);
+pub(crate) trait Trace {
+    /// Mark itself as being visited.
+    fn mark(&self, context: &mut ObjectAllocator) -> Result<(), AllocatorError>;
+    /// Blacken itself and mark its references.
+    fn blacken(&self, context: &mut ObjectAllocator) -> Result<(), AllocatorError>;
 }
 
 impl Trace for Value {
-    fn mark(&self, context: &mut GcContext) {
+    fn mark(&self, context: &mut ObjectAllocator) -> Result<(), AllocatorError> {
         match *self {
-            Value::String(string) => {
-                context.mark_string(string);
+            Value::String(index) => {
+                context.mark(index.into(), MarkColor::Grey)?;
             }
-            Value::Closure(closure) => {
-                context.mark_closure(closure);
+            Value::Closure(index) => {
+                context.mark(index.into(), MarkColor::Grey)?;
+            }
+            Value::Method(index) => {
+                context.mark(index.into(), MarkColor::Grey)?;
+            }
+            Value::Native(index) => {
+                context.mark(index.into(), MarkColor::Grey)?;
+            }
+            Value::Upvalue(index) => {
+                context.mark(index.into(), MarkColor::Grey)?;
+            }
+            Value::Class(index) => {
+                context.mark(index.into(), MarkColor::Grey)?;
+            }
+            Value::Instance(index) => {
+                context.mark(index.into(), MarkColor::Grey)?;
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    fn blacken(&self, context: &mut ObjectAllocator) -> Result<(), AllocatorError> {
+        match *self {
+            Value::String(index) => {
+                context.mark(index.into(), MarkColor::Black)?;
+            }
+            Value::Closure(index) => {
+                context.mark(index.into(), MarkColor::Black)?;
+                let upvalues = {
+                    let closure = context.resolve_closure(index)?;
+
+                    closure.upvalues.clone()
+                };
+
+                for upvalue in upvalues {
+                    Value::Upvalue(upvalue).mark(context)?;
+                }
+            }
+            Value::Method(index) => {
+                context.mark(index.into(), MarkColor::Black)?;
+                let (closure, receiver) = {
+                    let method = context.resolve_method(index)?;
+
+                    (method.closure, method.receiver)
+                };
+
+                Value::Closure(closure).mark(context)?;
+                Value::Instance(receiver).mark(context)?;
+            }
+            Value::Native(index) => {
+                context.mark(index.into(), MarkColor::Black)?;
+            }
+            Value::Upvalue(index) => {
+                context.mark(index.into(), MarkColor::Black)?;
+                let value = {
+                    let upvalue = context.resolve_upvalue(index)?;
+
+                    match *upvalue {
+                        Upvalue::Closed { value } => value,
+                        Upvalue::Open { .. } => return Ok(()),
+                    }
+                };
+                value.mark(context)?;
+            }
+            Value::Class(index) => {
+                context.mark(index.into(), MarkColor::Black)?;
+                let methods: Vec<_> = {
+                    let class = context.resolve_class(index)?;
+
+                    class.methods.values().copied().collect()
+                };
+
+                for method in methods {
+                    Value::Closure(method).mark(context)?;
+                }
+            }
+            Value::Instance(index) => {
+                context.mark(index.into(), MarkColor::Black)?;
+                let (class, fields) = {
+                    let instance = context.resolve_instance(index)?;
+
+                    (
+                        instance.class,
+                        instance.fields.values().copied().collect::<Vec<_>>(),
+                    )
+                };
+
+                Value::Class(class).mark(context)?;
+                for field in fields {
+                    field.mark(context)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }
 
+/// A closure.
 #[derive(Debug, Clone)]
-pub struct Closure {
+pub(crate) struct Closure {
     /// The name of the function.
     pub(crate) name: Symbol,
     /// The chunk ID of the function body.
@@ -235,10 +335,55 @@ pub struct Closure {
     pub(crate) upvalues: Vec<ArenaIndex<Upvalue>>,
 }
 
+/// A class.
+#[derive(Debug, Clone)]
+pub(crate) struct Class {
+    /// The name of the class.
+    pub(crate) name: Symbol,
+    /// The class' methods.
+    pub(crate) methods: HashMap<Symbol, ArenaIndex<Closure>>,
+}
+
+/// An instance.
+#[derive(Debug, Clone)]
+pub(crate) struct Instance {
+    /// The instance's class.
+    pub(crate) class: ArenaIndex<Class>,
+    /// The instance's fields.
+    pub(crate) fields: HashMap<Symbol, Value>,
+}
+
+/// A bound method.
+#[derive(Debug, Clone)]
+pub(crate) struct Method {
+    /// The closure.
+    pub(crate) closure: ArenaIndex<Closure>,
+    /// The bound instance.
+    pub(crate) receiver: ArenaIndex<Instance>,
+}
+
+/// An upvalue.
+#[derive(Debug, Clone)]
+pub(crate) enum Upvalue {
+    /// An upvalue that is still open i.e. on the stack.
+    Open {
+        /// The stack slot.
+        slot: StackSlot,
+        /// The next open upvalue.
+        next: Option<ArenaIndex<Upvalue>>,
+    },
+    /// An upvalue that is closed i.e. on the heap.
+    Closed {
+        /// The closed value.
+        value: Value,
+    },
+}
+
 impl Closure {
+    /// Resolve a closure for display formatting purposes.
     pub(crate) const fn resolve<'value>(
         &'value self,
-        allocator: &'value GcContext,
+        allocator: &'value ObjectAllocator,
         interner: &'value ConstantInterner,
     ) -> ResolvedClosure<'value> {
         ResolvedClosure {
@@ -249,27 +394,11 @@ impl Closure {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Method {
-    pub(crate) closure: ArenaIndex<Closure>,
-    pub(crate) receiver: ArenaIndex<Instance>,
-}
-
-#[derive(Debug, Clone)]
-pub enum Upvalue {
-    Open {
-        slot: StackSlot,
-        next: Option<ArenaIndex<Upvalue>>,
-    },
-    Closed {
-        value: Value,
-    },
-}
-
 impl Upvalue {
+    /// Resolve an upvalue for display formatting purposes.
     pub(crate) const fn resolve<'value>(
         &'value self,
-        allocator: &'value GcContext,
+        allocator: &'value ObjectAllocator,
         interner: &'value ConstantInterner,
     ) -> ResolvedUpvalue<'value> {
         ResolvedUpvalue {
@@ -280,45 +409,12 @@ impl Upvalue {
     }
 }
 
-impl fmt::Display for Value {
-    #[expect(
-        clippy::min_ident_chars,
-        reason = "keep consistent with trait definition."
-    )]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Value::Number(value) => {
-                write!(f, "{value}")
-            }
-            Value::Bool(value) => {
-                write!(f, "{value}")
-            }
-            Value::Nil => {
-                write!(f, "nil")
-            }
-            Value::String(ref value) => {
-                write!(f, "{value:?}")
-            }
-            Value::Closure(ref closure) => {
-                write!(f, "<fn {closure:?}>")
-            }
-            Value::Native(ref native) => {
-                write!(f, "<native fn {native:?}>")
-            }
-            Value::Upvalue(ref upvalue) => write!(f, "<upvalue {upvalue:?}>"),
-            Value::Class(ref class) => write!(f, "<class {class:?}>"),
-            Value::Instance(ref instance) => write!(f, "<instance {instance:?}>"),
-            Value::Method(ref method) => write!(f, "<fn {method:?}>"),
-        }
-    }
-}
-
 #[derive(Debug)]
-pub struct ResolvedValue<'value> {
+pub(crate) struct ResolvedValue<'value> {
     /// The value to print.
     inner: &'value Value,
     /// The allocator to use to dereference references.
-    allocator: &'value GcContext,
+    allocator: &'value ObjectAllocator,
     /// The constant interner.
     interner: &'value ConstantInterner,
 }
@@ -331,7 +427,10 @@ impl fmt::Display for ResolvedValue<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self.inner {
             Value::Closure(handle) => {
-                let closure = self.allocator.resolve_closure(handle).ok_or(fmt::Error)?;
+                let closure = self
+                    .allocator
+                    .resolve_closure(handle)
+                    .map_err(|_err| fmt::Error)?;
                 let name = self
                     .interner
                     .resolve_string(closure.name)
@@ -339,11 +438,14 @@ impl fmt::Display for ResolvedValue<'_> {
                 write!(f, "<fn {name}>")
             }
             Value::Method(handle) => {
-                let method = self.allocator.resolve_method(handle).ok_or(fmt::Error)?;
+                let method = self
+                    .allocator
+                    .resolve_method(handle)
+                    .map_err(|_err| fmt::Error)?;
                 let closure = self
                     .allocator
                     .resolve_closure(method.closure)
-                    .ok_or(fmt::Error)?;
+                    .map_err(|_err| fmt::Error)?;
                 let name = self
                     .interner
                     .resolve_string(closure.name)
@@ -351,64 +453,61 @@ impl fmt::Display for ResolvedValue<'_> {
                 write!(f, "<fn {name}>")
             }
             Value::Native(handle) => {
-                let native = self.allocator.resolve_native(handle).ok_or(fmt::Error)?;
+                let native = self
+                    .allocator
+                    .resolve_native(handle)
+                    .map_err(|_err| fmt::Error)?;
                 write!(f, "<native fn {}>", native.name())
             }
             Value::String(handle) => {
-                let string = self.allocator.resolve_string(handle).ok_or(fmt::Error)?;
+                let string = self
+                    .allocator
+                    .resolve_string(handle)
+                    .map_err(|_err| fmt::Error)?;
                 write!(f, "{string}")
             }
             Value::Class(handle) => {
-                let class = self.allocator.resolve_class(handle).ok_or(fmt::Error)?;
+                let class = self
+                    .allocator
+                    .resolve_class(handle)
+                    .map_err(|_err| fmt::Error)?;
                 let name = self.interner.resolve_string(class.name).ok_or(fmt::Error)?;
                 write!(f, "{name}")
             }
             Value::Instance(handle) => {
-                let instance = self.allocator.resolve_instance(handle).ok_or(fmt::Error)?;
+                let instance = self
+                    .allocator
+                    .resolve_instance(handle)
+                    .map_err(|_err| fmt::Error)?;
                 let class = self
                     .allocator
                     .resolve_class(instance.class)
-                    .ok_or(fmt::Error)?;
+                    .map_err(|_err| fmt::Error)?;
                 let name = self.interner.resolve_string(class.name).ok_or(fmt::Error)?;
                 write!(f, "<object {name}>")
             }
             Value::Upvalue(handle) => {
-                let upvalue = self.allocator.resolve_upvalue(handle).ok_or(fmt::Error)?;
-                match *upvalue {
-                    Upvalue::Open { slot, next } => match next {
-                        Some(next_index) => {
-                            write!(
-                                f,
-                                "<open upvalue ${}, next = {next_index:?}>",
-                                slot.to_usize()
-                            )
-                        }
-                        None => {
-                            write!(f, "<open upvalue ${}>", slot.to_usize())
-                        }
-                    },
-                    Upvalue::Closed { ref value } => {
-                        write!(
-                            f,
-                            "<closed upvalue {}>",
-                            value.resolve(self.allocator, self.interner)
-                        )
-                    }
-                }
+                let upvalue = self
+                    .allocator
+                    .resolve_upvalue(handle)
+                    .map_err(|_err| fmt::Error)?;
+                let upvalue = upvalue.resolve(self.allocator, self.interner);
+                write!(f, "{upvalue:?}")
             }
-            ref value => {
-                write!(f, "{value}")
-            }
+            Value::Number(value) => write!(f, "{value}"),
+            Value::Bool(value) => write!(f, "{value}"),
+            Value::Nil => write!(f, "nil"),
         }
     }
 }
 
+/// A resolved closure for the purposes of display formatting.
 #[derive(Debug)]
-pub struct ResolvedClosure<'value> {
+pub(crate) struct ResolvedClosure<'value> {
     /// The value to print.
     inner: &'value Closure,
     /// The allocator to use to dereference references.
-    allocator: &'value GcContext,
+    allocator: &'value ObjectAllocator,
     /// The constant interner.
     interner: &'value ConstantInterner,
 }
@@ -435,7 +534,7 @@ impl fmt::Display for ResolvedClosure<'_> {
                     .inner
                     .upvalues
                     .iter()
-                    .filter_map(|handle| self.allocator.resolve_upvalue(*handle))
+                    .filter_map(|handle| self.allocator.resolve_upvalue(*handle).ok())
                     .map(|val| val.resolve(self.allocator, self.interner))
                     .collect::<Vec<_>>(),
             )
@@ -443,11 +542,12 @@ impl fmt::Display for ResolvedClosure<'_> {
     }
 }
 
-pub struct ResolvedUpvalue<'value> {
+/// A resolved upvalue for the purposes of display formatting.
+pub(crate) struct ResolvedUpvalue<'value> {
     /// The value to print.
     inner: &'value Upvalue,
     /// The allocator to use to dereference references.
-    allocator: &'value GcContext,
+    allocator: &'value ObjectAllocator,
     /// The constant interner.
     interner: &'value ConstantInterner,
 }
@@ -473,19 +573,4 @@ impl fmt::Debug for ResolvedUpvalue<'_> {
                 .finish(),
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct Class {
-    /// The name of the class.
-    pub(crate) name: Symbol,
-    /// The class' methods.
-    pub(crate) methods: HashMap<Symbol, ArenaIndex<Closure>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Instance {
-    /// The instance's class.
-    pub(crate) class: ArenaIndex<Class>,
-    pub(crate) fields: HashMap<Symbol, Value>,
 }

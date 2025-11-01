@@ -8,16 +8,32 @@ pub struct ConstantInterner {
     numbers: ConstantPool<f64>,
     closures: ConstantPool<Closure>,
     classes: ConstantPool<Class>,
+    /// Super keyword.
+    kw_super: Symbol,
+    /// This keyword.
+    kw_this: Symbol,
+    /// The symbol for `init`; the name for constructors.
+    init_sym: Symbol,
+    /// The symbol for the empty string.
+    empty_sym: Symbol,
 }
 
 impl ConstantInterner {
     #[must_use]
-    pub fn with_interner(interner: Interner) -> Self {
+    pub fn with_interner(mut interner: Interner) -> Self {
+        let kw_super = interner.intern("super");
+        let kw_this = interner.intern("this");
+        let init_sym = interner.intern("init");
+        let empty_sym = interner.intern("");
         Self {
             strings: interner,
             numbers: ConstantPool::with_hasher(RandomState::new()),
             closures: ConstantPool::with_hasher(RandomState::new()),
             classes: ConstantPool::with_hasher(RandomState::new()),
+            kw_super,
+            kw_this,
+            init_sym,
+            empty_sym,
         }
     }
 
@@ -44,6 +60,30 @@ impl ConstantInterner {
     #[must_use]
     pub fn resolve_class(&self, index: ConstantIndex<Class>) -> Option<&Class> {
         self.classes.resolve(index)
+    }
+
+    /// Return the symbol representing the super keyword.
+    #[must_use]
+    pub const fn kw_super(&self) -> Symbol {
+        self.kw_super
+    }
+
+    /// Return the symbol representing the super keyword.
+    #[must_use]
+    pub const fn kw_this(&self) -> Symbol {
+        self.kw_this
+    }
+
+    /// Return the symbol representing the init constructor name.
+    #[must_use]
+    pub const fn init_sym(&self) -> Symbol {
+        self.init_sym
+    }
+
+    /// Return the symbol representing the empty string.
+    #[must_use]
+    pub const fn empty_sym(&self) -> Symbol {
+        self.empty_sym
     }
 }
 

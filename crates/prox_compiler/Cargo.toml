@@ -4,13 +4,14 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
-mitsein = { workspace = true }
+prox_array = { workspace = true }
 prox_bytecode = { workspace = true }
 prox_interner = { workspace = true }
 prox_lexer = { workspace = true }
 prox_parser = { workspace = true }
 prox_span = { workspace = true }
 
+mitsein = { workspace = true }
 tracing = { workspace = true }
 
 [lints]

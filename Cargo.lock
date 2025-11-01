@@ -87,6 +87,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrayvec"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
+
+[[package]]
 name = "backtrace"
 version = "0.3.75"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -411,9 +417,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "prox_array"
+version = "0.0.0"
+
+[[package]]
 name = "prox_bytecode"
 version = "0.0.0"
 dependencies = [
+ "prox_array",
  "prox_interner",
  "prox_lexer",
  "prox_span",
@@ -425,6 +436,7 @@ name = "prox_compiler"
 version = "0.0.0"
 dependencies = [
  "mitsein",
+ "prox_array",
  "prox_bytecode",
  "prox_interner",
  "prox_lexer",
@@ -440,6 +452,7 @@ dependencies = [
  "ariadne",
  "prox_parser",
  "prox_span",
+ "prox_svm",
  "prox_walker",
 ]
 
@@ -472,6 +485,7 @@ version = "0.0.0"
 name = "prox_svm"
 version = "0.0.0"
 dependencies = [
+ "arrayvec",
  "compact_str",
  "prox_bytecode",
  "prox_compiler",

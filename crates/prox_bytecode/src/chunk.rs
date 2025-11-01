@@ -3,6 +3,7 @@ use crate::pool::ConstantInterner;
 use core::convert;
 use core::fmt;
 use core::iter;
+use prox_array::RunArray;
 use prox_interner::Symbol;
 use prox_lexer::SourceCode;
 use prox_span::Span;
@@ -38,13 +39,17 @@ impl convert::TryFrom<usize> for ChunkId {
     }
 }
 
+/// A chunk representing a compiled function.
 #[derive(Debug)]
 pub struct Chunk {
+    /// The name of the function.
     pub name: Symbol,
+    /// The instruction stream.
     pub stream: Box<[u8]>,
+    /// A list of the byte offsets for each opcode.
     pub starts: Box<[usize]>,
-    pub spans: Box<[Span]>,
-    pub lines: Box<[usize]>,
+    /// The corresponding span for each instruction.
+    pub spans: RunArray<Span>,
 }
 
 pub struct OpcodeIterator<'op> {

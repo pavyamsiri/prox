@@ -39,8 +39,7 @@ impl NativeFunction for Clock {
         );
         let now = SystemTime::now();
         let duration_since_epoch = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
-        #[expect(clippy::cast_precision_loss, reason = "no way to avoid this.")]
-        Ok(Value::Number(duration_since_epoch.as_secs() as f64))
+        Ok(Value::Number(duration_since_epoch.as_secs_f64()))
     }
 
     fn name(&self) -> &'static str {

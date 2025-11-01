@@ -3,6 +3,7 @@ use mitsein::iter1::FromIterator1 as _;
 use mitsein::iter1::IntoIterator1 as _;
 use mitsein::segment::Tail as _;
 use mitsein::vec1::Vec1;
+use prox_array::RunArray;
 use prox_bytecode::InstructionOffset;
 use prox_bytecode::Opcode;
 use prox_bytecode::OpcodeEmitter;
@@ -75,7 +76,7 @@ pub struct ChunkBuilder {
     name: Symbol,
     stream: Vec<u8>,
     starts: Vec<usize>,
-    spans: Vec<Span>,
+    spans: RunArray<Span>,
 }
 
 pub struct ChunkPoolBuilder {
@@ -92,30 +93,26 @@ impl ChunkBuilder {
             name,
             stream: Vec::new(),
             starts: Vec::new(),
-            spans: Vec::new(),
+            spans: RunArray::new(),
         }
     }
 
-    fn finish(self, code: &SourceCode<'_>) -> Chunk {
-        let lines = self
-            .spans
-            .iter()
-            .map(|span| code.get_line(span).start)
-            .collect();
+    fn finish(self) -> Chunk {
         Chunk {
             name: self.name,
             stream: self.stream.into_boxed_slice(),
             starts: self.starts.into_boxed_slice(),
-            spans: self.spans.into_boxed_slice(),
-            lines,
+            spans: self.spans,
         }
     }
 
     fn emit_opcode(&mut self, opcode: Opcode, span: Span) -> usize {
         let label = self.get_label();
         self.starts.push(label);
-        self.spans.push(span);
+        let before = self.stream.len();
         opcode.encode(self);
+        let num_bytes = self.stream.len() - before;
+        self.spans.push_multiple(span, num_bytes);
         label
     }
 
@@ -179,8 +176,8 @@ impl ChunkPoolBuilder {
         }
     }
 
-    fn finish(self, code: &SourceCode<'_>) -> ChunkPool {
-        let chunks = Vec1::from_iter1(self.chunks.into_iter1().map(|chunk| chunk.finish(code)));
+    fn finish(self) -> ChunkPool {
+        let chunks = Vec1::from_iter1(self.chunks.into_iter1().map(ChunkBuilder::finish));
         ChunkPool { chunks }
     }
 
@@ -268,10 +265,10 @@ struct CompilerContext {
 }
 
 impl CompilerContext {
-    fn new(kind: FunctionKind, interner: &mut ConstantInterner) -> Self {
+    fn new(kind: FunctionKind, interner: &ConstantInterner) -> Self {
         let base_local = match kind {
-            FunctionKind::Function => interner.intern(""),
-            FunctionKind::Method | FunctionKind::Init => interner.intern("this"),
+            FunctionKind::Function => interner.empty_sym(),
+            FunctionKind::Method | FunctionKind::Init => interner.init_sym(),
         };
         Self {
             locals: Vec1::from_one(Local {
@@ -370,7 +367,7 @@ struct Compiler {
 }
 
 impl Compiler {
-    fn begin_context(&mut self, kind: FunctionKind, interner: &mut ConstantInterner) {
+    fn begin_context(&mut self, kind: FunctionKind, interner: &ConstantInterner) {
         self.contexts.push(CompilerContext::new(kind, interner));
     }
 
@@ -478,7 +475,7 @@ impl Compiler {
 }
 
 impl Compiler {
-    fn new(interner: &mut ConstantInterner) -> Self {
+    fn new(interner: &ConstantInterner) -> Self {
         Self {
             contexts: Vec1::from_one(CompilerContext::new(FunctionKind::Function, interner)),
         }
@@ -487,14 +484,13 @@ impl Compiler {
     fn compile(
         mut self,
         mut pool: ChunkPoolBuilder,
-        code: &SourceCode<'_>,
         ast: &Ast,
         mut interner: ConstantInterner,
     ) -> Result<Compilation, CompilationError> {
         self.compile_stmt(&mut pool, ChunkId::from(0), ast, &mut interner, ast.root())?;
 
         Ok(Compilation {
-            pool: pool.finish(code),
+            pool: pool.finish(),
             resolver: interner,
         })
     }
@@ -1175,7 +1171,7 @@ impl Compiler {
             let method_span = ast.span(method_node);
             let (is_method, block, parameters) = ast.fn_decl_extra(method_node);
             assert!(is_method, "should be a method.");
-            let kind = if method_name == interner.intern("init") {
+            let kind = if method_name == interner.init_sym() {
                 FunctionKind::Init
             } else {
                 FunctionKind::Method
@@ -1242,15 +1238,15 @@ impl Compiler {
         pool: &mut ChunkPoolBuilder,
         current_chunk: ChunkId,
         ast: &Ast,
-        interner: &mut ConstantInterner,
+        interner: &ConstantInterner,
         index: NodeIndex,
     ) -> Result<(), CompilationError> {
         let data = ast.data(index);
         let span = ast.span(index);
         let name = data.symbol();
 
-        self.push_identifier(pool, current_chunk, interner.intern("this"), span)?;
-        self.push_identifier(pool, current_chunk, interner.intern("super"), span)?;
+        self.push_identifier(pool, current_chunk, interner.kw_this(), span)?;
+        self.push_identifier(pool, current_chunk, interner.kw_super(), span)?;
         pool.get_mut(current_chunk, span)?
             .emit_opcode(Opcode::GetSuper(name), span);
 
@@ -1388,16 +1384,12 @@ impl ChunkPool {
 ///
 /// # Errors
 /// This will error if there are any issues during compilation like a malformed AST.
-pub fn compile(
-    code: &SourceCode<'_>,
-    ast: &Ast,
-    interner: Interner,
-) -> Result<Compilation, CompilationError> {
-    tracing::info!("Compiling with interner {interner}");
+pub fn compile(ast: &Ast, interner: Interner) -> Result<Compilation, CompilationError> {
+    tracing::debug!("Compiling with interner {interner}");
     let mut interner = ConstantInterner::with_interner(interner);
 
     let program_symbol = interner.intern("program");
     let pool = ChunkPoolBuilder::new(program_symbol);
     tracing::debug!("Compiling program...");
-    Compiler::new(&mut interner).compile(pool, code, ast, interner)
+    Compiler::new(&interner).compile(pool, ast, interner)
 }

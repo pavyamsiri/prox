@@ -54,7 +54,7 @@ impl Generation {
     }
 
     /// Return the raw integer.
-    pub(crate) const fn raw(self) -> u32 {
+    pub const fn raw(self) -> u32 {
         self.0
     }
 }
@@ -101,6 +101,8 @@ pub(crate) struct Arena<T> {
     free_list: Option<ArenaPtr>,
     /// The name of the arena.
     name: &'static str,
+    /// The number of live allocated bytes.
+    num_live_bytes: usize,
 }
 
 /// An iterator over used entries in an arena.
@@ -187,11 +189,13 @@ impl<T> Arena<T> {
             data: Vec::new(),
             free_list: None,
             name,
+            num_live_bytes: 0,
         }
     }
 
     /// Allocate a value and return a handle to it.
     fn alloc(&mut self, value: T) -> ArenaIndex<T> {
+        self.num_live_bytes += mem::size_of::<Entry<T>>();
         if let Some(index) = self.next_free() {
             self.data[index.ptr.to_index()] = Entry::Used {
                 generation: index.generation,
@@ -212,18 +216,27 @@ impl<T> Arena<T> {
     }
 
     /// Return the number of used bytes in the arena.
-    fn num_bytes(&self) -> usize {
-        self.data
-            .iter()
-            .filter(|ent| matches!(ent, Entry::Used { .. }))
-            .count()
-            * mem::size_of::<Entry<T>>()
+    const fn num_live_bytes(&self) -> usize {
+        self.num_live_bytes
     }
 
-    /// Return the number of bytes used by an entry.
-    #[expect(clippy::unused_self, reason = "need to be a method to use in macros.")]
-    const fn entry_size(&self) -> usize {
-        mem::size_of::<Entry<T>>()
+    /// Return the number of total bytes in the arena.
+    const fn num_bytes(&self) -> usize {
+        self.data.len() * mem::size_of::<Entry<T>>()
+    }
+
+    /// Return the ratio of live bytes to total bytes.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "will run out of memory before precision matters."
+    )]
+    const fn liveness_ratio(&self) -> f64 {
+        let total_bytes = self.num_bytes() as f64;
+        if total_bytes == 0.0 {
+            0.0
+        } else {
+            self.num_live_bytes as f64 / total_bytes
+        }
     }
 
     /// Return the next free entry if it exists.
@@ -265,6 +278,8 @@ pub(crate) enum ArenaError {
     },
     /// The handle's generation is out of date.
     WrongGeneration {
+        /// The index of the handle.
+        index: usize,
         /// The entry's generation.
         expected: Generation,
         /// The handle's generation.
@@ -302,6 +317,7 @@ impl<T> Arena<T> {
                 expected: generation,
                 actual: index.generation,
                 name: self.name,
+                index: ptr.to_index(),
             }),
             Entry::Free { .. } => Err(ArenaError::Free {
                 index: index.ptr.to_index(),
@@ -331,6 +347,7 @@ impl<T> Arena<T> {
                 expected: generation,
                 actual: index.generation,
                 name: self.name,
+                index: ptr.to_index(),
             }),
             &mut Entry::Free { .. } => Err(ArenaError::Free {
                 index: index.ptr.to_index(),
@@ -364,6 +381,7 @@ impl<T> Arena<T> {
                 expected: generation,
                 actual: index.generation,
                 name: self.name,
+                index: ptr.to_index(),
             }),
             Entry::Free { .. } => Err(ArenaError::Free {
                 index: index.ptr.to_index(),
@@ -381,6 +399,7 @@ impl<T> Arena<T> {
 
         match self.data[ptr.to_index()] {
             Entry::Used { generation, .. } if generation == index.generation => {
+                self.num_live_bytes -= mem::size_of::<Entry<T>>();
                 let _entry = mem::replace(
                     &mut self.data[ptr.to_index()],
                     Entry::Free {
@@ -460,6 +479,8 @@ pub(crate) enum AllocatorError {
     },
     /// The handle's generation is out of date.
     WrongGeneration {
+        /// The index of the handle.
+        index: usize,
         /// The entry's generation.
         expected: Generation,
         /// The handle's generation.
@@ -484,10 +505,12 @@ impl From<ArenaError> for AllocatorError {
                 expected,
                 actual,
                 name,
+                index,
             } => Self::WrongGeneration {
                 expected,
                 actual,
                 name,
+                index,
             },
             ArenaError::Free { index, name } => Self::Free { index, name },
         }
@@ -678,8 +701,15 @@ impl ObjectAllocator {
         buffer: &mut impl fmt::Write,
         interner: &ConstantInterner,
     ) -> Result<(), fmt::Error> {
-        writeln!(buffer, "Strings: {} bytes", self.strings.num_bytes())?;
-        for (index, string) in self.strings.iter() {
+        const LIMIT: usize = 16;
+        writeln!(
+            buffer,
+            "Strings: {}/{} bytes ({}%)",
+            self.strings.num_live_bytes(),
+            self.strings.num_bytes(),
+            100.0 * self.strings.liveness_ratio()
+        )?;
+        for (index, string) in self.strings.iter().take(LIMIT) {
             const CUTOFF: usize = 30;
             if string.chars().count() < CUTOFF {
                 writeln!(buffer, "#{index} = \"{string}\"")?;
@@ -692,33 +722,63 @@ impl ObjectAllocator {
             }
         }
 
-        writeln!(buffer, "Natives: {} bytes", self.natives.num_bytes())?;
-        for (index, func) in self.natives.iter() {
+        writeln!(
+            buffer,
+            "Natives: {}/{} bytes ({}%) ",
+            self.natives.num_live_bytes(),
+            self.natives.num_bytes(),
+            100.0 * self.natives.liveness_ratio()
+        )?;
+        for (index, func) in self.natives.iter().take(LIMIT) {
             writeln!(buffer, "#{index} = {}", func.name())?;
         }
 
-        writeln!(buffer, "Closures: {} bytes", self.closures.num_bytes())?;
-        for (index, func) in self.closures.iter() {
+        writeln!(
+            buffer,
+            "Closures: {}/{} bytes ({}%) ",
+            self.closures.num_live_bytes(),
+            self.closures.num_bytes(),
+            100.0 * self.closures.liveness_ratio()
+        )?;
+        for (index, func) in self.closures.iter().take(LIMIT) {
             writeln!(buffer, "#{index} = {}", func.resolve(self, interner))?;
         }
 
-        writeln!(buffer, "Upvalues: {} bytes", self.upvalues.num_bytes())?;
-        for (index, func) in self.upvalues.iter() {
+        writeln!(
+            buffer,
+            "Upvalues: {}/{} bytes ({}%) ",
+            self.upvalues.num_live_bytes(),
+            self.upvalues.num_bytes(),
+            100.0 * self.upvalues.liveness_ratio()
+        )?;
+        for (index, func) in self.upvalues.iter().take(LIMIT) {
             writeln!(buffer, "#{index} = {func:?}")?;
         }
 
-        writeln!(buffer, "Classes: {} bytes", self.classes.num_bytes())?;
-        for (index, func) in self.classes.iter() {
+        writeln!(
+            buffer,
+            "Classes: {}/{} bytes ({}%) ",
+            self.classes.num_live_bytes(),
+            self.classes.num_bytes(),
+            100.0 * self.classes.liveness_ratio()
+        )?;
+        for (index, func) in self.classes.iter().take(LIMIT) {
             writeln!(buffer, "#{index} = {func:?}")?;
         }
 
-        writeln!(buffer, "Instances: {} bytes", self.instances.num_bytes())?;
-        for (index, func) in self.instances.iter() {
+        writeln!(
+            buffer,
+            "Instances: {}/{} bytes ({}%) ",
+            self.instances.num_live_bytes(),
+            self.instances.num_bytes(),
+            100.0 * self.instances.liveness_ratio()
+        )?;
+        for (index, func) in self.instances.iter().take(LIMIT) {
             writeln!(buffer, "#{index} = {func:?}")?;
         }
 
-        writeln!(buffer, "Methods: {} bytes", self.methods.num_bytes())?;
-        for (index, func) in self.methods.iter() {
+        writeln!(buffer, "Methods: {} bytes", self.methods.num_live_bytes())?;
+        for (index, func) in self.methods.iter().take(LIMIT) {
             writeln!(buffer, "#{index} = {func:?}")?;
         }
 
@@ -728,8 +788,13 @@ impl ObjectAllocator {
 
 impl ObjectAllocator {
     /// Return whether the allocator wants to garbage collect.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "will run out of memory before precision matters."
+    )]
     pub(crate) fn should_collect(&self) -> bool {
-        self.num_bytes() > self.capacity
+        self.num_live_bytes() > self.capacity
+            && (self.num_live_bytes() as f64 / self.num_total_bytes() as f64) > 0.9
     }
 
     /// Prepare the allocator for garbage collection by marking all entries as unvisited.
@@ -756,6 +821,7 @@ impl ObjectAllocator {
         let mut freed = 0;
         macro_rules! free_white {
             ($alloc:expr) => {
+                let before = $alloc.num_live_bytes();
                 for index in 0..$alloc.data.len() {
                     let entry = &$alloc.data[index];
                     if let &Entry::Used {
@@ -768,13 +834,13 @@ impl ObjectAllocator {
                             ArenaPtr::new(index + 1).expect("guaranteed to be non-zero."),
                             generation,
                         ));
-                        freed += $alloc.entry_size();
                     }
                 }
+                freed += before - $alloc.num_live_bytes();
             };
         }
         apply_to_arenas!(self => free_white);
-        self.capacity = self.num_bytes() * GC_HEAP_GROW_FACTOR;
+        self.capacity = self.num_total_bytes() * GC_HEAP_GROW_FACTOR;
 
         Ok(freed)
     }
@@ -811,7 +877,17 @@ impl ObjectAllocator {
     }
 
     /// The number of bytes taken by live entries.
-    pub(crate) fn num_bytes(&self) -> usize {
+    pub(crate) fn num_live_bytes(&self) -> usize {
+        self.strings.num_live_bytes()
+            + self.closures.num_live_bytes()
+            + self.natives.num_live_bytes()
+            + self.upvalues.num_live_bytes()
+            + self.classes.num_live_bytes()
+            + self.instances.num_live_bytes()
+            + self.methods.num_live_bytes()
+    }
+
+    pub(crate) fn num_total_bytes(&self) -> usize {
         self.strings.num_bytes()
             + self.closures.num_bytes()
             + self.natives.num_bytes()

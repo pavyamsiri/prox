@@ -10,6 +10,7 @@ prox_interner = { workspace = true }
 prox_parser = { workspace = true }
 prox_span = { workspace = true }
 
+arrayvec = { workspace = true }
 compact_str = { workspace = true }
 tracing = { workspace = true }
 

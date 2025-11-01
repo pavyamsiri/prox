@@ -35,7 +35,13 @@ pub enum CLCommand {
     /// Compile a file into bytecode and print disassembly.
     Disassemble { path: PathBuf },
     /// Compile a file into bytecode and run it in an interpreter.
-    Run { path: PathBuf },
+    Run {
+        /// Path to source file.
+        path: PathBuf,
+        /// Enable debug mode
+        #[arg(short, long)]
+        debug: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -53,37 +59,40 @@ fn fallable_main() -> Result<ExitCode, Report> {
 
     match args.routine {
         CLCommand::Tokenize { path } => {
-            eprintln!("Tokenizing {}...", path.display());
+            tracing::debug!("Tokenizing {}...", path.display());
             let src = fs::read_to_string(&path)?;
             if !tokenize(&src) {
                 return Ok(ExitCode::from(FRONTEND_ERROR));
             }
         }
         CLCommand::Parse { path } => {
-            eprintln!("Parsing {}...", path.display());
+            tracing::debug!("Parsing {}...", path.display());
             let src = fs::read_to_string(&path)?;
             if !parse(&src, &path) {
                 return Ok(ExitCode::from(FRONTEND_ERROR));
             }
         }
         CLCommand::Walk { path } => {
-            eprintln!("Walking {}...", path.display());
+            tracing::debug!("Walking {}...", path.display());
             let src = fs::read_to_string(&path)?;
             if !walk(&src, &path) {
                 return Ok(ExitCode::from(FRONTEND_ERROR));
             }
         }
         CLCommand::Disassemble { path } => {
-            eprintln!("Disassembling {}...", path.display());
+            tracing::debug!("Disassembling {}...", path.display());
             let src = fs::read_to_string(&path)?;
             if !disassemble(&src, &path) {
                 return Ok(ExitCode::from(FRONTEND_ERROR));
             }
         }
-        CLCommand::Run { path } => {
-            eprintln!("Interpreting {}...", path.display());
+        CLCommand::Run {
+            path,
+            debug: is_debug,
+        } => {
+            tracing::debug!("Interpreting {}...", path.display());
             let src = fs::read_to_string(&path)?;
-            if !interpret(&src, &path) {
+            if !interpret(&src, &path, is_debug) {
                 return Ok(ExitCode::from(FRONTEND_ERROR));
             }
         }
@@ -133,7 +142,7 @@ fn parse(text: &str, path: &Path) -> bool {
 }
 
 fn walk(text: &str, path: &Path) -> bool {
-    tracing::info!("{text}");
+    tracing::debug!("{text}");
     let path = &path.to_string_lossy();
     tracing::debug!("Parsing...");
     let cst = Parser::new(text).parse();
@@ -191,7 +200,6 @@ fn disassemble(text: &str, path: &Path) -> bool {
     let path = &path.to_string_lossy();
     tracing::debug!("Parsing...");
     let cst = Parser::new(text).parse();
-    let source = cst.source.clone();
     let resolver = Resolver::default();
     tracing::debug!("Resolving...");
     let resolved_cst = match resolver.resolve(cst) {
@@ -217,7 +225,7 @@ fn disassemble(text: &str, path: &Path) -> bool {
     };
 
     tracing::debug!("Compiling...");
-    let unit = match compile(&source, &ast, interner) {
+    let unit = match compile(&ast, interner) {
         Ok(unit) => unit,
         Err(_err) => {
             tracing::warn!("should print error here");
@@ -232,12 +240,11 @@ fn disassemble(text: &str, path: &Path) -> bool {
     true
 }
 
-fn interpret(text: &str, path: &Path) -> bool {
-    tracing::info!("{text}");
+fn interpret(text: &str, path: &Path, is_debug: bool) -> bool {
+    tracing::debug!("{text}");
     let path = &path.to_string_lossy();
     tracing::debug!("Parsing...");
     let cst = Parser::new(text).parse();
-    let source = cst.source.clone();
     let resolver = Resolver::default();
     tracing::debug!("Resolving...");
     let resolved_cst = match resolver.resolve(cst) {
@@ -263,7 +270,7 @@ fn interpret(text: &str, path: &Path) -> bool {
     };
 
     tracing::debug!("Compiling...");
-    let mut unit = match compile(&source, &ast, interner) {
+    let mut unit = match compile(&ast, interner) {
         Ok(unit) => unit,
         Err(_err) => {
             tracing::warn!("should print error here");
@@ -274,22 +281,18 @@ fn interpret(text: &str, path: &Path) -> bool {
     let mut buffer = String::new();
     unit.disassemble(&mut buffer, &resolved_cst.source)
         .expect("not handling io errors.");
-    println!("{buffer}");
+    tracing::debug!("{buffer}");
 
     tracing::debug!("Interpreting...");
     let mut context = SvmStdoutContext;
-    let res = svm_run(&mut context, &mut unit);
+    let res = svm_run(&mut context, &mut unit, is_debug);
     match res {
-        Ok(()) => {}
+        Ok(()) => true,
         Err(err) => {
             let mut err_buffer = String::new();
-            err.format(&mut err_buffer, unit.resolver.get_interner())
-                .expect("not handling buffer write failure.");
-            err_buffer.push('\n');
+            err.report(&mut err_buffer, path, text);
             println!("{err_buffer}");
-            return false;
+            false
         }
     }
-
-    true
 }

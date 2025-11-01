@@ -10,11 +10,16 @@ members = [
     "crates/prox_compiler",
     "crates/prox_span",
     "crates/prox_svm",
+    "crates/prox_array",
 ]
 resolver = "3"
 
+[profile.release]
+debug = true
+
 [workspace.dependencies]
 ariadne = "0.5.1"
+arrayvec = "0.7.6"
 clap = { version = "4.5.48", features = ["derive"] }
 color-eyre = "0.6.5"
 compact_str = "0.9.0"
@@ -22,6 +27,7 @@ mitsein = "0.8.0"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
+prox_array = { path = "crates/prox_array" }
 prox_bytecode = { path = "crates/prox_bytecode" }
 prox_compiler = { path = "crates/prox_compiler" }
 prox_errors = { path = "crates/prox_errors" }

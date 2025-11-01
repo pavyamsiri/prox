@@ -4,6 +4,7 @@ use crate::gc::AllocatorError;
 use crate::gc::Generation;
 use core::convert;
 use core::fmt;
+use prox_bytecode::chunk::ChunkId;
 use prox_interner::{Interner, Symbol};
 use prox_span::Span;
 
@@ -53,8 +54,6 @@ pub enum RuntimeErrorKind {
     Segfault,
     /// Not a instance.
     InvalidInstance,
-    /// Call frame base is not a closure.
-    InvalidCallFrame,
     /// Open upvalue link list contains closed upvalues.
     InvalidOpenUpvalue,
     /// Attempted to resolve a constant using an invalid symbol.
@@ -80,6 +79,8 @@ pub enum RuntimeErrorKind {
     },
     /// Attempted to dereference an arena index that is invalid; index's generation is out of date.
     WrongGenerationDereference {
+        /// The index of the handle.
+        index: usize,
         /// The entry's generation.
         expected: Generation,
         /// The handle's generation.
@@ -88,7 +89,7 @@ pub enum RuntimeErrorKind {
         name: &'static str,
     },
     /// Attempted to dereference a chunk but got nothing..
-    InvalidChunkDereference,
+    InvalidChunkDereference { id: ChunkId },
     /// Attempted to attach a non-method value to a class.
     InvalidMethodAttach,
     /// Attempted to attach a method to a non-class. value.
@@ -145,10 +146,9 @@ impl RuntimeError {
             RuntimeErrorKind::InvalidInstance => write!(buffer, "Invalid instance."),
             RuntimeErrorKind::InvalidMethodAttach => write!(buffer, "Invalid method to attach."),
             RuntimeErrorKind::InvalidClassAttach => write!(buffer, "Invalid class to attach to."),
-            RuntimeErrorKind::InvalidCallFrame => write!(buffer, "Invalid call frame."),
             RuntimeErrorKind::InvalidOpenUpvalue => write!(buffer, "Invalid open upvalue."),
-            RuntimeErrorKind::InvalidChunkDereference => {
-                write!(buffer, "Invalid chunk dereference.")
+            RuntimeErrorKind::InvalidChunkDereference { id } => {
+                write!(buffer, "Invalid chunk id {}.", id.to_usize())
             }
             RuntimeErrorKind::EmptyStack => write!(buffer, "Empty stack."),
             RuntimeErrorKind::EmptyCallStack => write!(buffer, "Empty call stack."),
@@ -169,10 +169,11 @@ impl RuntimeError {
                 expected,
                 actual,
                 name,
+                index,
             } => {
                 write!(
                     buffer,
-                    "{name}: Dereference with outdated handle. Expected {} but got {}.",
+                    "{name}: Dereference with outdated handle {index}. Expected {} but got {}.",
                     expected.raw(),
                     actual.raw(),
                 )
@@ -194,10 +195,12 @@ impl convert::From<AllocatorError> for RuntimeErrorKind {
                 expected,
                 actual,
                 name,
+                index,
             } => RuntimeErrorKind::WrongGenerationDereference {
                 expected,
                 actual,
                 name,
+                index,
             },
             AllocatorError::Free { index, name } => {
                 RuntimeErrorKind::FreeDereference { index, name }

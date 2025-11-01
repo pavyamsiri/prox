@@ -8,6 +8,7 @@ ariadne = { workspace = true }
 
 prox_parser = { workspace = true }
 prox_span = { workspace = true }
+prox_svm = { workspace = true }
 prox_walker = { workspace = true }
 
 [lints]

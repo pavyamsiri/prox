@@ -32,7 +32,7 @@ fn run_interpreter(text: &str) -> String {
         }
     };
 
-    let mut unit = match compile(&source, &ast, interner) {
+    let mut unit = match compile(&ast, interner) {
         Ok(unit) => unit,
         Err(_err) => {
             tracing::warn!("should print error here");
@@ -41,7 +41,7 @@ fn run_interpreter(text: &str) -> String {
     };
 
     let mut context = BufferContext::with_buffer(buffer);
-    let res = svm_run(&mut context, &mut unit);
+    let res = svm_run(&mut context, &mut unit, false);
 
     match res {
         Ok(()) => context.flush(),

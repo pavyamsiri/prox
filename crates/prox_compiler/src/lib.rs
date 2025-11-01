@@ -268,7 +268,7 @@ impl CompilerContext {
     fn new(kind: FunctionKind, interner: &ConstantInterner) -> Self {
         let base_local = match kind {
             FunctionKind::Function => interner.empty_sym(),
-            FunctionKind::Method | FunctionKind::Init => interner.init_sym(),
+            FunctionKind::Method | FunctionKind::Init => interner.kw_this(),
         };
         Self {
             locals: Vec1::from_one(Local {

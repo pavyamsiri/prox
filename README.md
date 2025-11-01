@@ -1,6 +1,6 @@
 # Prox
 
-`prox` is a Rust implementation of the Lox programming language from Bob Nystrom's book "Crafting Interpreters".
+`prox` is a Rust implementation of the Lox programming language from Bob Nystrom's book [Crafting Interpreters](https://craftinginterpreters.com/).
 
 ## Usage
 

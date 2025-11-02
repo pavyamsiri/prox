@@ -42,6 +42,7 @@ pub(crate) enum Value {
 
 impl Value {
     /// Execute add.
+    #[inline]
     pub(crate) fn add(
         allocator: &mut ObjectAllocator,
         lhs: &Self,
@@ -65,6 +66,7 @@ impl Value {
     }
 
     /// Execute subtraction.
+    #[inline]
     pub(crate) fn sub(&self, rhs: &Self) -> Result<Value, RuntimeErrorKind> {
         #[expect(
             clippy::pattern_type_mismatch,
@@ -77,6 +79,7 @@ impl Value {
     }
 
     /// Execute multiplication.
+    #[inline]
     pub(crate) fn mul(&self, rhs: &Self) -> Result<Value, RuntimeErrorKind> {
         #[expect(
             clippy::pattern_type_mismatch,
@@ -89,6 +92,7 @@ impl Value {
     }
 
     /// Execute division.
+    #[inline]
     pub(crate) fn div(&self, rhs: &Self) -> Result<Value, RuntimeErrorKind> {
         #[expect(
             clippy::pattern_type_mismatch,
@@ -101,6 +105,7 @@ impl Value {
     }
 
     /// Evaluate equality.
+    #[inline]
     pub(crate) fn eq(allocator: &ObjectAllocator, lhs: &Self, rhs: &Self) -> bool {
         #[expect(
             clippy::pattern_type_mismatch,
@@ -125,6 +130,7 @@ impl Value {
     }
 
     /// Evaluate less than.
+    #[inline]
     pub(crate) fn less_than(&self, rhs: &Self) -> Result<Value, RuntimeErrorKind> {
         #[expect(
             clippy::pattern_type_mismatch,
@@ -137,6 +143,7 @@ impl Value {
     }
 
     /// Evaluate less than or equal.
+    #[inline]
     pub(crate) fn less_than_or_equal(&self, rhs: &Self) -> Result<Value, RuntimeErrorKind> {
         #[expect(
             clippy::pattern_type_mismatch,
@@ -149,6 +156,7 @@ impl Value {
     }
 
     /// Evaluate greater than.
+    #[inline]
     pub(crate) fn greater_than(&self, rhs: &Self) -> Result<Value, RuntimeErrorKind> {
         #[expect(
             clippy::pattern_type_mismatch,
@@ -161,6 +169,7 @@ impl Value {
     }
 
     /// Evaluate greater than or equal.
+    #[inline]
     pub(crate) fn greater_than_or_equal(&self, rhs: &Self) -> Result<Value, RuntimeErrorKind> {
         #[expect(
             clippy::pattern_type_mismatch,
@@ -173,6 +182,7 @@ impl Value {
     }
 
     /// Return whether the value is truthy.
+    #[inline]
     #[must_use]
     pub(crate) const fn truthy(&self) -> bool {
         match *self {
@@ -183,6 +193,7 @@ impl Value {
     }
 
     /// Evaluate numeric negation.
+    #[inline]
     pub(crate) fn neg(&self) -> Result<Value, RuntimeErrorKind> {
         #[expect(
             clippy::pattern_type_mismatch,

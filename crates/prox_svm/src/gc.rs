@@ -184,13 +184,38 @@ impl<T> Eq for ArenaIndex<T> {}
 
 impl<T> Arena<T> {
     /// Initialise a new arena allocator.
-    const fn new(name: &'static str) -> Self {
+    fn new(name: &'static str, size: u32) -> Self {
+        let (free_list, data) = Self::reserve_space(size);
         Self {
-            data: Vec::new(),
-            free_list: None,
+            data,
+            free_list,
             name,
             num_live_bytes: 0,
         }
+    }
+
+    /// Reserve `size` free entries.
+    fn reserve_space(size: u32) -> (Option<ArenaPtr>, Vec<Entry<T>>) {
+        if size == 0 {
+            return (None, Vec::new());
+        }
+
+        let mut data = Vec::with_capacity(size as usize);
+
+        for i in 0..size {
+            let next_free = (i < size - 1)
+                .then(|| (ArenaPtr::new((i + 2) as usize)).expect("guaranteed to fit."));
+            let new_entry = Entry::Free {
+                generation: Generation(0),
+                next_free,
+            };
+            data.push(new_entry);
+        }
+
+        (
+            Some(ArenaPtr::new(1).expect("statically guaranteed to fit.")),
+            data,
+        )
     }
 
     /// Allocate a value and return a handle to it.
@@ -544,15 +569,15 @@ pub(crate) struct ObjectAllocator {
 
 impl ObjectAllocator {
     /// Initialise the object allocator.
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            strings: Arena::new("strings"),
-            closures: Arena::new("closures"),
-            natives: Arena::new("natives"),
-            upvalues: Arena::new("upvalues"),
-            classes: Arena::new("classes"),
-            instances: Arena::new("instances"),
-            methods: Arena::new("methods"),
+            strings: Arena::new("strings", 32),
+            closures: Arena::new("closures", 4),
+            natives: Arena::new("natives", 2),
+            upvalues: Arena::new("upvalues", 4),
+            classes: Arena::new("classes", 4),
+            instances: Arena::new("instances", 1024),
+            methods: Arena::new("methods", 4),
             grey_stack: Vec::new(),
             capacity: 1024,
         }
@@ -788,13 +813,8 @@ impl ObjectAllocator {
 
 impl ObjectAllocator {
     /// Return whether the allocator wants to garbage collect.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "will run out of memory before precision matters."
-    )]
     pub(crate) fn should_collect(&self) -> bool {
         self.num_live_bytes() > self.capacity
-            && (self.num_live_bytes() as f64 / self.num_total_bytes() as f64) > 0.9
     }
 
     /// Prepare the allocator for garbage collection by marking all entries as unvisited.

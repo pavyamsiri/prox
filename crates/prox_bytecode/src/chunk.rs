@@ -3,6 +3,7 @@ use crate::pool::ConstantInterner;
 use core::convert;
 use core::fmt;
 use core::iter;
+use core::mem;
 use prox_array::RunArray;
 use prox_interner::Symbol;
 use prox_lexer::SourceCode;
@@ -14,7 +15,7 @@ pub struct TryFromChunkIdError;
 
 /// An index to a chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ChunkId(u32);
+pub struct ChunkId(pub u32);
 
 impl ChunkId {
     /// Convert to usize.
@@ -45,41 +46,36 @@ pub struct Chunk {
     /// The name of the function.
     pub name: Symbol,
     /// The instruction stream.
-    pub stream: Box<[u8]>,
-    /// A list of the byte offsets for each opcode.
-    pub starts: Box<[usize]>,
+    pub stream: Box<[Opcode]>,
     /// The corresponding span for each instruction.
     pub spans: RunArray<Span>,
 }
 
 pub struct OpcodeIterator<'op> {
-    starts: &'op [usize],
-    stream: &'op [u8],
+    stream: &'op [Opcode],
     index: usize,
 }
 
 impl iter::Iterator for OpcodeIterator<'_> {
-    type Item = (Option<Opcode>, usize);
+    type Item = (Opcode, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let start = *self.starts.get(self.index)?;
+        let index = self.index;
         self.index += 1;
-        Opcode::decode(&self.stream[start..])
-            .map(|(_, op)| (Some(op), start))
-            .ok()
+        let start = *self.stream.get(index)?;
+        Some((start, self.index * mem::size_of::<Opcode>()))
     }
 }
 
 impl<'op> iter::IntoIterator for &'op Chunk {
-    type Item = (Option<Opcode>, usize);
+    type Item = (Opcode, usize);
 
     type IntoIter = OpcodeIterator<'op>;
 
     fn into_iter(self) -> Self::IntoIter {
         OpcodeIterator {
-            starts: &self.starts,
-            stream: &self.stream,
             index: 0,
+            stream: &self.stream,
         }
     }
 }
@@ -87,12 +83,6 @@ impl<'op> iter::IntoIterator for &'op Chunk {
 impl Chunk {
     fn iter(&self) -> OpcodeIterator<'_> {
         self.into_iter()
-    }
-
-    /// Return a slice of the stream from offset onwards.
-    #[must_use]
-    pub fn at(&self, offset: usize) -> &[u8] {
-        &self.stream[offset..]
     }
 
     /// Disassemble a chunk's bytecode into the given buffer.
@@ -140,11 +130,7 @@ impl Chunk {
                     width = num_digits
                 )?;
             }
-            if let Some(opcode) = opcode {
-                opcode.format(buffer, &prefix, resolver, offset)?;
-            } else {
-                write!(buffer, "invalid")?;
-            }
+            opcode.format(buffer, &prefix, resolver, offset)?;
             writeln!(buffer)?;
 
             previous_line_number = Some(line_number);

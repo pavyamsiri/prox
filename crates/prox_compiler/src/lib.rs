@@ -6,7 +6,6 @@ use mitsein::vec1::Vec1;
 use prox_array::RunArray;
 use prox_bytecode::InstructionOffset;
 use prox_bytecode::Opcode;
-use prox_bytecode::OpcodeEmitter;
 use prox_bytecode::StackSlot;
 use prox_bytecode::UpvalueIndex;
 use prox_bytecode::chunk::Chunk;
@@ -14,7 +13,6 @@ use prox_bytecode::chunk::ChunkId;
 use prox_bytecode::class::Class;
 use prox_bytecode::function::Closure;
 use prox_bytecode::function::Upvalue;
-use prox_bytecode::is_jump_opcode;
 use prox_bytecode::pool::ConstantInterner;
 use prox_interner::ConstantIndex;
 use prox_interner::{Interner, Symbol};
@@ -74,8 +72,7 @@ enum CompilationErrorKind {
 #[derive(Debug)]
 pub struct ChunkBuilder {
     name: Symbol,
-    stream: Vec<u8>,
-    starts: Vec<usize>,
+    stream: Vec<Opcode>,
     spans: RunArray<Span>,
 }
 
@@ -92,7 +89,6 @@ impl ChunkBuilder {
         Self {
             name,
             stream: Vec::new(),
-            starts: Vec::new(),
             spans: RunArray::new(),
         }
     }
@@ -101,18 +97,14 @@ impl ChunkBuilder {
         Chunk {
             name: self.name,
             stream: self.stream.into_boxed_slice(),
-            starts: self.starts.into_boxed_slice(),
             spans: self.spans,
         }
     }
 
     fn emit_opcode(&mut self, opcode: Opcode, span: Span) -> usize {
         let label = self.get_label();
-        self.starts.push(label);
-        let before = self.stream.len();
-        opcode.encode(self);
-        let num_bytes = self.stream.len() - before;
-        self.spans.push_multiple(span, num_bytes);
+        self.spans.push(span);
+        self.stream.push(opcode);
         label
     }
 
@@ -122,50 +114,28 @@ impl ChunkBuilder {
 
     fn patch_jump(&mut self, start: usize, span: Span) -> Result<(), CompilationError> {
         let current_label = self.get_label();
-        if (start + 5) >= current_label {
+        let offset = i32::try_from(current_label - start)
+            .expect("`current_label` was already checked to be greater than `start`.");
+        let Some(opcode) = self.stream.get_mut(start) else {
             return Err(CompilationError {
                 kind: CompilationErrorKind::OutOfBoundsJumpPatch,
                 span,
             });
+        };
+
+        #[expect(clippy::pattern_type_mismatch, reason = "clearer this way.")]
+        match opcode {
+            Opcode::Jump(old_offset) | Opcode::JumpIfFalse(old_offset) => {
+                *old_offset = InstructionOffset::from_i32(offset);
+            }
+            _ => {
+                return Err(CompilationError {
+                    kind: CompilationErrorKind::InvalidJumpPatch,
+                    span,
+                });
+            }
         }
-
-        let offset = i32::try_from(current_label - start)
-            .expect("`current_label` was already checked to be greater than `start`.");
-        let opcode = self.stream[start];
-
-        if !is_jump_opcode(opcode) {
-            return Err(CompilationError {
-                kind: CompilationErrorKind::InvalidJumpPatch,
-                span,
-            });
-        }
-
-        let [first, second, third, fourth] = offset.to_le_bytes();
-
-        self.stream[start + 1] = first;
-        self.stream[start + 2] = second;
-        self.stream[start + 3] = third;
-        self.stream[start + 4] = fourth;
-
         Ok(())
-    }
-}
-
-impl OpcodeEmitter for ChunkBuilder {
-    fn emit_u8(&mut self, value: u8) {
-        self.stream.push(value);
-    }
-
-    fn emit_u32(&mut self, value: u32) {
-        for byte in value.to_le_bytes() {
-            self.stream.push(byte);
-        }
-    }
-
-    fn emit_i32(&mut self, value: i32) {
-        for byte in value.to_le_bytes() {
-            self.stream.push(byte);
-        }
     }
 }
 
